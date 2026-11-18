@@ -1,0 +1,4 @@
+/target/
+/.metrics/
+/.venv/
+__pycache__/

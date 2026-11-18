@@ -1,0 +1,10 @@
+[package]
+name = "q900-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Experimental multichannel PipeWire RTP bridge for Linux"
+license = "MIT"
+
+[dependencies]
+ctrlc = "3.4"
+serde_json = "1"
