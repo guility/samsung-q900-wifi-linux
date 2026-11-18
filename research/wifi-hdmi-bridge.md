@@ -49,14 +49,14 @@ Read-only checks on the current Linux host found:
 
 - Linux x86_64, NVIDIA GB202/RTX 5090 GPU with an NVIDIA HD Audio Controller, plus Intel UHD Graphics 770/onboard audio.
 - `xrandr` shows NVIDIA `HDMI-A-5` connected as the primary display at 3840×2160 and about 143.94Hz. The prior live EDID/PipeWire inspection identified that display as a TCL device named “Beyond TV” (product 0x9653), not a Samsung TV.
-- PipeWire currently exposes the Q900T as a Bluetooth output and shows USB outputs; it does not expose an HDMI sink connected to the Q900T. The current HDMI cable goes to the TCL display. The `aplay` utility is not installed, so ALSA channel capabilities were not queried.
+- PipeWire currently exposes the Q900T as a Bluetooth output and shows USB outputs; it does not expose an HDMI sink connected to the Q900T. The current HDMI cable goes to the TCL display. The NVIDIA card lists 5.1 and 7.1 HDMI output profiles, but every HDMI port is currently unavailable and the card profile is `off`; these profiles show host-side support, not Q900T acceptance. The `aplay` utility is not installed, so ALSA channel capabilities were not queried.
 - Other enumerated GPU connectors are disconnected. The host has HDMI-capable audio hardware, but no direct Q900T HDMI channel test has been performed. A second output or a separate receiver is needed to keep the current local display path while independently feeding the soundbar. Using the Q900T's video pass-through inline could cap the current display path at the soundbar's documented 4K/60Hz pass-through rate.
 
 These observations do not rule out a direct HDMI test. They show that the present HDMI/EDID negotiation is with the TCL display, not the Q900T, and the current PipeWire session has no Q900T HDMI audio endpoint. The wireless receiver architecture avoids replacing that local display connection.
 
 ## Remaining tests before choosing the path
 
-1. Connect a known multichannel HDMI source to Q900T HDMI 1/2, inspect the receiver's HDMI ELD/ALSA/PipeWire profile, and play discrete 5.1 and 7.1 LPCM channel-identification samples. Record rate, bit depth, channel order, and whether Q900T reports HDMI audio.
+1. Connect the host's free HDMI output to Q900T HDMI 1/2, inspect the receiver's HDMI ELD/ALSA/PipeWire profile, and play discrete 5.1 and 7.1 LPCM channel-identification samples. Record rate, bit depth, channel order, and whether Q900T reports HDMI audio. This can test Q900T LPCM acceptance before adding a separate Wi-Fi receiver.
 2. On a Pi 5 or another prospective receiver, verify the connected Q900T sink negotiates 6 and 8 channel LPCM under Linux. Raspberry Pi documents HDMI audio but not multichannel PCM support; don't treat a stereo PipeWire profile as a pass.
 3. Only after both tests pass, stream multichannel PCM over RTP and measure host-local versus Q900T skew, drift, jitter, packet loss, and audio/video delay. Repeat on the intended Wi-Fi network.
 4. If Q900T does not accept multichannel LPCM, stop and decide whether the scope permits a documented compressed 5.1 Dolby/DTS route. A software encoder's existence or a listed decoder format alone does not verify live 5.1/7.1 quality, channel preservation, or sync.
