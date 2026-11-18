@@ -16,11 +16,12 @@ impl AudioLayout {
         }
     }
 
-    pub fn pa_channel_map(self) -> &'static str {
+    /// Channel order used by the sender bus and the RTP payload.
+    pub fn rtp_channel_map(self) -> &'static str {
         match self {
             Self::Surround51 => "front-left,front-right,front-center,lfe,rear-left,rear-right",
             Self::Surround71 => {
-                "front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right"
+                "front-left,front-right,front-center,lfe,side-left,side-right,rear-left,rear-right"
             }
         }
     }
@@ -75,6 +76,12 @@ pub struct SenderPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiverPlan {
+    pub rtp_sink: String,
+    pub modules: Vec<ModuleSpec>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SinkCapabilities {
     pub name: String,
     pub channels: usize,
@@ -90,7 +97,7 @@ pub fn sender_plan(bus_sink: &str, config: &SenderConfig) -> SenderPlan {
             "format=s24be".to_owned(),
             format!("channels={channels}"),
             format!("rate={}", config.rate),
-            format!("channel_map={}", config.layout.pa_channel_map()),
+            format!("channel_map={}", config.layout.rtp_channel_map()),
             "sink_properties=device.description=Q900_Bridge_Multichannel".to_owned(),
         ],
     };
@@ -124,14 +131,46 @@ pub fn sender_plan(bus_sink: &str, config: &SenderConfig) -> SenderPlan {
     }
 }
 
-pub fn receiver_plan(config: &ReceiverConfig) -> ModuleSpec {
-    ModuleSpec {
+pub fn receiver_plan(config: &ReceiverConfig, rtp_sink: &str) -> ReceiverPlan {
+    let channels = config.layout.channels().to_string();
+    let channel_map = config.layout.rtp_channel_map();
+    let receive_sink = ModuleSpec {
+        name: "module-null-sink".to_owned(),
+        args: vec![
+            format!("sink_name={rtp_sink}"),
+            "format=s24be".to_owned(),
+            format!("channels={channels}"),
+            "rate=48000".to_owned(),
+            format!("channel_map={channel_map}"),
+            "sink_properties=device.description=Q900_Bridge_RTP_Receiver".to_owned(),
+        ],
+    };
+    let rtp_receiver = ModuleSpec {
         name: "module-rtp-recv".to_owned(),
         args: vec![
-            format!("sink={}", config.sink),
+            format!("sink={rtp_sink}"),
             "sap_address=224.0.0.56".to_owned(),
             format!("latency_msec={}", config.latency_ms),
         ],
+    };
+    let channel_mapper = ModuleSpec {
+        name: "module-loopback".to_owned(),
+        args: vec![
+            format!("source={rtp_sink}.monitor"),
+            format!("sink={}", config.sink),
+            format!("latency_msec={}", config.latency_ms),
+            format!("channels={channels}"),
+            format!("channel_map={channel_map}"),
+            "remix=1".to_owned(),
+            "source_dont_move=1".to_owned(),
+            "sink_dont_move=1".to_owned(),
+            "sink_input_properties=media.name=Q900_Bridge_RTP_Output".to_owned(),
+        ],
+    };
+
+    ReceiverPlan {
+        rtp_sink: rtp_sink.to_owned(),
+        modules: vec![receive_sink, rtp_receiver, channel_mapper],
     }
 }
 

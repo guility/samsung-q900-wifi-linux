@@ -32,7 +32,7 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
         plan.modules[0]
             .args
             .iter()
-            .any(|arg| arg.contains("rear-left,rear-right,side-left,side-right"))
+            .any(|arg| arg.contains("side-left,side-right,rear-left,rear-right"))
     );
     assert!(plan.modules[1].args.iter().any(|arg| arg == "format=s24be"));
     assert!(plan.modules[1].args.iter().any(|arg| arg == "channels=8"));
@@ -54,15 +54,49 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
 #[test]
 fn receiver_plan_selects_pcm_format_layout_and_latency() {
     let config = ReceiverConfig {
-        layout: AudioLayout::Surround51,
+        layout: AudioLayout::Surround71,
         sink: "alsa_output.hdmi".to_owned(),
         latency_ms: 60,
     };
 
-    let plan = receiver_plan(&config);
-    assert_eq!(plan.name, "module-rtp-recv");
-    assert!(plan.args.iter().any(|arg| arg == "sink=alsa_output.hdmi"));
-    assert!(plan.args.iter().any(|arg| arg == "latency_msec=60"));
+    let plan = receiver_plan(&config, "q900_rtp_rx_test");
+    assert_eq!(plan.modules.len(), 3);
+    assert_eq!(plan.modules[0].name, "module-null-sink");
+    assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=8"));
+    assert_eq!(plan.modules[1].name, "module-rtp-recv");
+    assert!(
+        plan.modules[1]
+            .args
+            .iter()
+            .any(|arg| arg == "sink=q900_rtp_rx_test")
+    );
+    assert!(
+        plan.modules[1]
+            .args
+            .iter()
+            .any(|arg| arg == "latency_msec=60")
+    );
+    assert_eq!(plan.modules[2].name, "module-loopback");
+    assert!(
+        plan.modules[2]
+            .args
+            .iter()
+            .any(|arg| arg == "source=q900_rtp_rx_test.monitor")
+    );
+    assert!(
+        plan.modules[2]
+            .args
+            .iter()
+            .any(|arg| arg == "sink=alsa_output.hdmi")
+    );
+    assert!(plan.modules[2].args.iter().any(|arg| arg == "channels=8"));
+    assert!(
+        plan.modules[2]
+            .args
+            .iter()
+            .any(|arg| arg == "channel_map=front-left,front-right,front-center,lfe,side-left,side-right,rear-left,rear-right")
+    );
+    assert!(plan.modules[2].args.iter().any(|arg| arg == "remix=1"));
 }
 
 #[test]

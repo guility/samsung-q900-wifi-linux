@@ -261,9 +261,16 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
             "{error}. Set the HDMI card to its Pro Audio profile (if available), then recheck with `pw-dump`."
         )
     })?;
-    let spec = receiver_plan(&args.config);
+    let rtp_sink = format!("q900_rtp_rx_{}", std::process::id());
+    let plan = receiver_plan(&args.config, &rtp_sink);
     if args.dry_run {
-        println!("Receiver plan: {} {}", spec.name, spec.args.join(" "));
+        println!(
+            "Receiver plan: RTP sink {} -> output {}.",
+            plan.rtp_sink, sink.name
+        );
+        for spec in &plan.modules {
+            println!("  {} {}", spec.name, spec.args.join(" "));
+        }
         println!(
             "Selected sink {} currently exposes {} channels: {}.",
             sink.name,
@@ -273,10 +280,10 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
         return Ok(());
     }
 
-    let ids = load_modules(std::slice::from_ref(&spec))?;
+    let ids = load_modules(&plan.modules)?;
     println!(
-        "Listening for PipeWire RTP sessions on {} ({} channels, {} ms buffer). Press Ctrl-C to stop.",
-        sink.name, args.config.layout, args.config.latency_ms
+        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} ({} ms buffer). Press Ctrl-C to stop.",
+        plan.rtp_sink, args.config.layout, sink.name, args.config.latency_ms
     );
     let wait = wait_until_stopped();
     let cleanup = unload_modules(&ids);

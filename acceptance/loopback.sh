@@ -89,7 +89,8 @@ for ((attempt = 0; attempt < 50; attempt++)); do
     exit 1
   fi
   if pw-link -l | grep -F "$rx_sink:playback_FL" >/dev/null \
-      && pw-link -l | grep -F "Q900_Bridge:$receive_port" >/dev/null; then
+      && pw-link -l | grep -F "Q900_Bridge:$receive_port" >/dev/null \
+      && pw-link -l | grep -F -- "|-> $rx_sink:playback_FL" >/dev/null; then
     connected=true
     break
   fi
@@ -141,10 +142,12 @@ import math
 import sys
 
 path, channels = sys.argv[1], int(sys.argv[2])
+rate = 48_000
+frequencies = [440 + channel * 137 for channel in range(channels)]
 samples = array.array("i")
 with open(path, "rb") as capture:
     samples.frombytes(capture.read())
-if samples.itemsize != 4 or len(samples) < 48_000 * channels:
+if samples.itemsize != 4 or len(samples) < rate * channels:
     raise SystemExit("receiver capture was too short to verify channel audio")
 frames = len(samples) // channels
 rms = [
@@ -153,5 +156,46 @@ rms = [
 ]
 if any(level < 100_000 for level in rms):
     raise SystemExit(f"one or more RTP channels were silent: {[round(x) for x in rms]}")
-print(f"RTP {channels}-channel loopback received audio on every channel; RMS={[round(x) for x in rms]}")
+
+active_frame = next(
+    (frame for frame in range(frames) if max(abs(samples[frame * channels + c]) for c in range(channels)) > 1_000_000),
+    None,
+)
+if active_frame is None:
+    raise SystemExit("receiver capture contains no test-tone marker")
+start = active_frame + rate // 5
+if start + rate > frames:
+    raise SystemExit("receiver capture ended before channel identity could be checked")
+
+def energy_at(channel, frequency):
+    coefficient = 2 * math.cos(2 * math.pi * frequency / rate)
+    previous = previous2 = 0.0
+    for frame in range(start, start + rate):
+        current = samples[frame * channels + channel] + coefficient * previous - previous2
+        previous2, previous = previous, current
+    return previous2**2 + previous**2 - coefficient * previous * previous2
+
+dominance = []
+mismatches = []
+for channel, expected_frequency in enumerate(frequencies):
+    channel_energies = [energy_at(channel, frequency) for frequency in frequencies]
+    expected_index = frequencies.index(expected_frequency)
+    expected = channel_energies[expected_index]
+    strongest_other = max(
+        energy for index, energy in enumerate(channel_energies) if index != expected_index
+    )
+    ratio = expected / max(strongest_other, 1.0)
+    dominance.append(ratio)
+    strongest_frequency = frequencies[max(range(channels), key=channel_energies.__getitem__)]
+    if ratio < 4:
+        mismatches.append(
+            f"out {channel + 1}: expected {expected_frequency} Hz, "
+            f"found {strongest_frequency} Hz (ratio={ratio:.2f})"
+        )
+if mismatches:
+    raise SystemExit("channel mapping mismatch: " + "; ".join(mismatches))
+print(
+    f"RTP {channels}-channel loopback preserved every channel's distinct tone; "
+    f"RMS={[round(x) for x in rms]}, frequency ratios={[round(x, 1) for x in dominance]}"
+)
 PY

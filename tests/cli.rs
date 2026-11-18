@@ -28,7 +28,7 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("7.1-channel s24be/48000 Hz RTP"));
     assert!(stdout.contains("channels=8"));
-    assert!(stdout.contains("rear-left,rear-right,side-left,side-right"));
+    assert!(stdout.contains("side-left,side-right,rear-left,rear-right"));
 }
 
 #[test]
