@@ -4,6 +4,8 @@ An experimental Rust bridge that routes Linux system audio to a PipeWire virtual
 
 The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 6.912 Mbit/s for 5.1 and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The current same-host loopback confirms channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
 
+The bridge's multichannel requirement is discrete 5.1 or 7.1 PCM (six or eight input channels). Samsung's 7.1.2 label describes the Q900T speaker configuration; it does not by itself confirm that HDMI accepts discrete 7.1.2 LPCM. This MVP does not claim independent height-channel input.
+
 The destination and open product decisions are tracked in the [Wayfinder map](https://github.com/guility/samsung-q900-wifi-linux/issues/1). Implementation work is tracked in [issue #10](https://github.com/guility/samsung-q900-wifi-linux/issues/10); direct Q900T HDMI LPCM acceptance is pending in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12).
 
 ## Requirements
