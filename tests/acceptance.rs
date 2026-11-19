@@ -371,6 +371,40 @@ fn keeps_active_sinks_without_channel_metadata_for_explicit_rejection() {
 }
 
 #[test]
+fn reads_stereo_channel_capabilities_from_suspended_bluez_enum_format() {
+    let dump = r#"[
+        {
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "state": "suspended",
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "bluez_output.q900",
+                    "device.api": "bluez5"
+                },
+                "params": {
+                    "EnumFormat": [{
+                        "mediaType": "audio",
+                        "mediaSubtype": "raw",
+                        "format": "S16LE",
+                        "rate": 48000,
+                        "channels": 2,
+                        "position": ["FL", "FR"]
+                    }]
+                }
+            }
+        }
+    ]"#;
+
+    let sinks = parse_pipewire_sinks(dump).unwrap();
+    assert_eq!(sinks.len(), 1);
+    assert_eq!(sinks[0].channels, 2);
+    assert_eq!(sinks[0].positions, ["FL", "FR"]);
+    assert!(validate_receiver_sink(&sinks[0], AudioLayout::Surround51).is_err());
+    assert!(validate_receiver_sink(&sinks[0], AudioLayout::Surround71).is_err());
+}
+
+#[test]
 fn module_specs_are_arguments_not_shell_text() {
     let spec = ModuleSpec {
         name: "module-loopback".to_owned(),

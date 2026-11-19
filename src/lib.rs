@@ -385,6 +385,16 @@ fn parse_pipewire_sink(
         return None;
     }
     let props = entry.get("info")?.get("props")?;
+    let params = entry.get("info")?.get("params");
+    let raw_audio_format = params
+        .and_then(|params| params.get("EnumFormat"))
+        .and_then(Value::as_array)
+        .and_then(|formats| {
+            formats.iter().find(|format| {
+                format.get("mediaType").and_then(Value::as_str) == Some("audio")
+                    && format.get("mediaSubtype").and_then(Value::as_str) == Some("raw")
+            })
+        });
     if props.get("media.class").and_then(Value::as_str) != Some("Audio/Sink") {
         return None;
     }
@@ -392,10 +402,14 @@ fn parse_pipewire_sink(
     let channels = props
         .get("audio.channels")
         .and_then(Value::as_u64)
+        .or_else(|| raw_audio_format.and_then(|format| format.get("channels")?.as_u64()))
         .unwrap_or_default() as usize;
     let positions = props
         .get("audio.position")
         .and_then(parse_positions)
+        .or_else(|| {
+            raw_audio_format.and_then(|format| format.get("position").and_then(parse_positions))
+        })
         .unwrap_or_default();
     let device_api = props
         .get("device.api")
