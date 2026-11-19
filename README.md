@@ -2,7 +2,7 @@
 
 An experimental Rust bridge that routes Linux system audio to a PipeWire virtual sink, mirrors it to a local output, and sends uncompressed multichannel PCM over RTP/Wi-Fi. The sender supports 5.1 (6 channels) and 7.1 (8 channels), using 24-bit/48 kHz PCM. This avoids Bluetooth audio codecs such as SBC on the bridge path.
 
-The destination and open product decisions are tracked in the [Wayfinder map](https://github.com/guility/samsung-q900-wifi-linux/issues/1). Implementation work is tracked in [issue #10](https://github.com/guility/samsung-q900-wifi-linux/issues/10); hardware acceptance for Q900T LPCM is still pending in [issue #9](https://github.com/guility/samsung-q900-wifi-linux/issues/9).
+The destination and open product decisions are tracked in the [Wayfinder map](https://github.com/guility/samsung-q900-wifi-linux/issues/1). Implementation work is tracked in [issue #10](https://github.com/guility/samsung-q900-wifi-linux/issues/10); direct Q900T HDMI LPCM acceptance is pending in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12).
 
 ## Requirements
 
@@ -75,6 +75,6 @@ The receiver checks the active PipeWire channel count and channel positions befo
 
 ## Current verification limits
 
-The Rust acceptance tests check 5.1/7.1 channel maps, RTP module plans, PipeWire sink parsing, Pro Audio HDMI-port availability, rejection of incompatible outputs, and analysis of acoustic sync observations. The host-only RTP acceptance script sends a distinct tone on every channel through a simulated AUX sink and checks channel identity after the receiver mapping. On this host, the NVIDIA Pro Audio sinks expose eight AUX channels but all HDMI ELD entries report no monitor, so the receiver rejects them for hardware playback. The Q900T itself is visible only as a two-channel Bluetooth sink; cross-host Wi-Fi, HDMI LPCM to the soundbar, and acoustic synchronization remain unverified in [issue #9](https://github.com/guility/samsung-q900-wifi-linux/issues/9) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
+The Rust acceptance tests check 5.1/7.1 channel maps, RTP module plans, PipeWire sink parsing, Pro Audio HDMI-port availability, rejection of incompatible outputs, and analysis of acoustic sync observations. The host-only RTP acceptance script sends a distinct tone on every channel through a simulated AUX sink and checks channel identity after the receiver mapping. On this host, the NVIDIA Pro Audio sinks expose eight AUX channels but all HDMI ELD entries report no monitor, so the receiver rejects them for hardware playback. The Q900T itself is visible only as a two-channel Bluetooth sink; cross-host Wi-Fi, HDMI LPCM to the soundbar, and acoustic synchronization remain unverified in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
 Acceptance scenarios are recorded in [`acceptance/multichannel.feature`](acceptance/multichannel.feature). Research reports are stored under `research/` on short-lived `research/<topic>` branches and linked from the relevant decision issues.
