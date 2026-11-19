@@ -95,6 +95,46 @@ fn receiver_dry_run_applies_fixed_output_delay() {
 }
 
 #[test]
+fn lpcm_check_dry_run_lists_51_channels_without_changing_default_routes() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "lpcm-check",
+        "--sink",
+        "test_hdmi",
+        "--layout",
+        "5.1",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("5.1-channel 24-bit/48 kHz test tones"));
+    assert!(stdout.contains("FL (front left, 440 Hz)"));
+    assert!(stdout.contains("LFE (subwoofer/LFE, 80 Hz)"));
+    assert!(stdout.contains("The default sink and existing application routes are not changed."));
+    assert!(!tools.log_file.exists());
+    assert!(!tools.loopback_pid_file.exists());
+}
+
+#[test]
+fn lpcm_check_refuses_71_on_a_six_channel_sink() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "lpcm-check",
+        "--sink",
+        "test_hdmi",
+        "--layout",
+        "7.1",
+        "--dry-run",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("exposes 6 channel(s); 7.1 requires at least 8"));
+    assert!(!tools.log_file.exists());
+}
+
+#[test]
 fn fixed_delay_options_reject_values_above_two_seconds() {
     let outputs = [
         run_cli(&[

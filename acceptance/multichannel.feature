@@ -38,6 +38,19 @@ Feature: Multichannel RTP audio bridge
     Then it reports that the sink needs at least six channels
     And it does not load an RTP receiver module
 
+  Scenario Outline: Check discrete LPCM channel order on a connected HDMI sink
+    Given the HDMI sink exposes <channels> channels in the requested layout
+    And the HDMI output is reported connected
+    When the user runs lpcm-check with layout <layout>
+    Then it plays one low-level 24-bit 48 kHz tone at a time on every channel
+    And it prints the channel name and tone frequency in playback order
+    And it leaves the system default sink and application routes unchanged
+
+    Examples:
+      | layout | channels |
+      | 5.1    | 6        |
+      | 7.1    | 8        |
+
   Scenario: Restore the sender's original audio routing
     Given the sender has moved existing system audio streams to its virtual sink
     When the sender stops with Ctrl-C

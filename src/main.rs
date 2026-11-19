@@ -1,3 +1,4 @@
+use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::sync::{OutputPath, analyze_sync, parse_sync_csv};
 use q900_bridge::{
     AudioLayout, LoopbackSpec, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
@@ -6,6 +7,7 @@ use q900_bridge::{
 };
 use std::collections::HashMap;
 use std::env;
+use std::io::Write;
 use std::net::Ipv4Addr;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::str::FromStr;
@@ -36,9 +38,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
     match args[0].as_str() {
         "sender" => run_sender(parse_sender_args(&args[1..])?),
         "receiver" => run_receiver(parse_receiver_args(&args[1..])?),
+        "lpcm-check" => run_lpcm_check(parse_lpcm_check_args(&args[1..])?),
         "sync-report" => run_sync_report(&args[1..]),
         other => Err(format!(
-            "unknown command {other:?}; expected sender, receiver, or sync-report"
+            "unknown command {other:?}; expected sender, receiver, lpcm-check, or sync-report"
         )),
     }
 }
@@ -93,6 +96,14 @@ struct SenderArgs {
 
 struct ReceiverArgs {
     config: ReceiverConfig,
+    dry_run: bool,
+}
+
+struct LpcmCheckArgs {
+    sink: String,
+    layout: AudioLayout,
+    tone_ms: u32,
+    gap_ms: u32,
     dry_run: bool,
 }
 
@@ -163,6 +174,48 @@ fn parse_receiver_args(args: &[String]) -> Result<ReceiverArgs, String> {
         },
         dry_run: options.enabled("--dry-run"),
     })
+}
+
+fn parse_lpcm_check_args(args: &[String]) -> Result<LpcmCheckArgs, String> {
+    let options = parse_options(
+        args,
+        &["--sink", "--layout", "--tone-ms", "--gap-ms"],
+        &["--dry-run"],
+    )?;
+    let sink = options
+        .value("--sink")
+        .ok_or_else(|| "lpcm-check requires --sink SINK_NAME".to_owned())?
+        .to_owned();
+    validate_sink_token(&sink)?;
+    let layout = parse_layout(options.value("--layout"))?;
+    let tone_ms = parse_duration_option(options.value("--tone-ms"), "--tone-ms", 800, 200, 3000)?;
+    let gap_ms = parse_duration_option(options.value("--gap-ms"), "--gap-ms", 300, 0, 2000)?;
+    Ok(LpcmCheckArgs {
+        sink,
+        layout,
+        tone_ms,
+        gap_ms,
+        dry_run: options.enabled("--dry-run"),
+    })
+}
+
+fn parse_duration_option(
+    value: Option<&str>,
+    flag: &str,
+    default: u32,
+    minimum: u32,
+    maximum: u32,
+) -> Result<u32, String> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    let duration = value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid {flag} value {value:?}"))?;
+    if !(minimum..=maximum).contains(&duration) {
+        return Err(format!("{flag} must be between {minimum} and {maximum} ms"));
+    }
+    Ok(duration)
 }
 
 struct ParsedOptions(HashMap<String, Option<String>>);
@@ -383,6 +436,178 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
     let loopback_cleanup = stop_loopback(&mut output_loopback);
     let module_cleanup = unload_modules(&ids);
     wait.and(loopback_cleanup).and(module_cleanup)
+}
+
+fn run_lpcm_check(args: LpcmCheckArgs) -> Result<(), String> {
+    let sink = find_pipewire_sink(&args.sink)?;
+    validate_receiver_sink(&sink, args.layout).map_err(|error| {
+        format!(
+            "{error}. Select an active HDMI sink that exposes the requested channels, then recheck with `pw-dump`."
+        )
+    })?;
+    if has_auxiliary_channel_map(&sink, args.layout) {
+        let cards = pactl_output(&["list", "cards"])?;
+        validate_aux_hdmi_route(&sink, &cards)?;
+    }
+
+    let test_sink = format!("q900_lpcm_test_{}", std::process::id());
+    let receiver_config = ReceiverConfig {
+        layout: args.layout,
+        sink: sink.name.clone(),
+        latency_ms: 100,
+        output_delay_ms: 0,
+    };
+    let plan = receiver_plan(&receiver_config, &test_sink, &sink);
+    let modules: Vec<ModuleSpec> = plan
+        .modules
+        .iter()
+        .filter(|module| module.name != "module-rtp-recv")
+        .cloned()
+        .collect();
+
+    if args.dry_run {
+        print_lpcm_check_plan(&args, &sink, &modules, &plan.output_loopback);
+        return Ok(());
+    }
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&interrupted);
+    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
+        .map_err(|error| format!("could not install Ctrl-C handler: {error}"))?;
+
+    let module_ids = load_modules(&modules)?;
+    let mut output_loopback = match spawn_loopback(&plan.output_loopback) {
+        Ok(process) => process,
+        Err(error) => {
+            let _ = unload_modules(&module_ids);
+            return Err(error);
+        }
+    };
+
+    thread::sleep(Duration::from_millis(300));
+    if interrupted.load(Ordering::SeqCst) {
+        let loopback_cleanup = stop_loopback(&mut output_loopback);
+        let module_cleanup = unload_modules(&module_ids);
+        return loopback_cleanup.and(module_cleanup);
+    }
+    let playback = play_lpcm_channel_test(&args, &test_sink);
+    let loopback_cleanup = stop_loopback(&mut output_loopback);
+    let module_cleanup = unload_modules(&module_ids);
+    playback.and(loopback_cleanup).and(module_cleanup)
+}
+
+fn print_lpcm_check_plan(
+    args: &LpcmCheckArgs,
+    sink: &SinkCapabilities,
+    modules: &[ModuleSpec],
+    output_loopback: &LoopbackSpec,
+) {
+    println!(
+        "LPCM check plan: {}-channel 24-bit/48 kHz test tones to {}.",
+        args.layout, sink.name
+    );
+    println!(
+        "Each channel is played alone at low level for {} ms, followed by {} ms of silence.",
+        args.tone_ms, args.gap_ms
+    );
+    for (index, tone) in channel_tones(args.layout).iter().enumerate() {
+        println!(
+            "  channel {}/{}: {} ({}, {} Hz)",
+            index + 1,
+            args.layout.channels(),
+            tone.channel,
+            channel_name(tone.channel),
+            tone.frequency_hz
+        );
+    }
+    for module in modules {
+        println!("  {} {}", module.name, module.args.join(" "));
+    }
+    print_loopback(output_loopback);
+    println!("The default sink and existing application routes are not changed.");
+}
+
+fn play_lpcm_channel_test(args: &LpcmCheckArgs, test_sink: &str) -> Result<(), String> {
+    let channel_map = args
+        .layout
+        .pipewire_rtp_channel_map()
+        .trim_matches(['[', ']'])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(",");
+    let channels = args.layout.channels().to_string();
+    println!(
+        "Playing {}-channel LPCM test tones to {} in this order:",
+        args.layout, args.sink
+    );
+    for (index, tone) in channel_tones(args.layout).iter().enumerate() {
+        println!(
+            "  {}/{}: {} ({}, {} Hz)",
+            index + 1,
+            args.layout.channels(),
+            tone.channel,
+            channel_name(tone.channel),
+            tone.frequency_hz
+        );
+    }
+    println!("Tones are low-level; press Ctrl-C to stop.");
+    let mut player = Command::new("pw-cat")
+        .args([
+            "--playback",
+            "--raw",
+            "--target",
+            test_sink,
+            "--rate",
+            "48000",
+            "--channels",
+            &channels,
+            "--channel-map",
+            &channel_map,
+            "--format",
+            "s24",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not start pw-cat: {error}"))?;
+    let Some(mut input) = player.stdin.take() else {
+        let _ = player.kill();
+        let _ = player.wait();
+        return Err("could not open pw-cat input stream".to_owned());
+    };
+    let result = std::io::stdout()
+        .flush()
+        .map_err(|error| format!("could not flush test progress: {error}"))
+        .and_then(|()| {
+            write_channel_identification_tones(args.layout, args.tone_ms, args.gap_ms, &mut input)
+                .map_err(|error| format!("could not send channel test audio: {error}"))
+        });
+    drop(input);
+    if result.is_err() {
+        let _ = player.kill();
+    }
+    let status = player
+        .wait()
+        .map_err(|error| format!("could not wait for pw-cat: {error}"))?;
+    result?;
+    if !status.success() {
+        return Err(format!("pw-cat exited with status {status}"));
+    }
+    Ok(())
+}
+
+fn channel_name(channel: &str) -> &'static str {
+    match channel {
+        "FL" => "front left",
+        "FR" => "front right",
+        "FC" => "front center",
+        "LFE" => "subwoofer/LFE",
+        "SL" => "side left",
+        "SR" => "side right",
+        "RL" => "rear left",
+        "RR" => "rear right",
+        _ => "unknown",
+    }
 }
 
 fn find_pipewire_sink(name: &str) -> Result<SinkCapabilities, String> {
@@ -621,6 +846,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Use the delay options to apply a fixed acoustic offset; they do not compensate clock drift."
+        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout 5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Use lpcm-check to play one channel at a time through an active HDMI sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
     );
 }

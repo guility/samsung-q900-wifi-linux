@@ -1,8 +1,10 @@
+use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::{
     AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
     has_auxiliary_channel_map, parse_pipewire_sinks, receiver_plan, sender_plan,
     validate_aux_hdmi_route, validate_receiver_sink,
 };
+use std::io::Cursor;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
@@ -12,6 +14,54 @@ fn accepts_only_explicit_51_and_71_layouts() {
     assert_eq!(AudioLayout::from_str("7.1").unwrap().channels(), 8);
     assert!(AudioLayout::from_str("stereo").is_err());
     assert!(AudioLayout::from_str("5.1.2").is_err());
+}
+
+#[test]
+fn lpcm_channel_tones_are_separate_and_use_24_bit_native_endian_samples() {
+    for layout in [AudioLayout::Surround51, AudioLayout::Surround71] {
+        let channels = layout.channels();
+        let tone_frames = 200 * 48;
+        let gap_frames = 10 * 48;
+        let mut pcm = Cursor::new(Vec::new());
+        write_channel_identification_tones(layout, 200, 10, &mut pcm).unwrap();
+        let pcm = pcm.into_inner();
+        assert_eq!(
+            pcm.len(),
+            channel_tones(layout).len() * (tone_frames + gap_frames) * channels * 3
+        );
+
+        for (tone_index, _) in channel_tones(layout).iter().enumerate() {
+            let segment_start = tone_index * (tone_frames + gap_frames);
+            let frame = (segment_start + 240..segment_start + tone_frames)
+                .find(|frame| decode_s24_native(&pcm, (frame * channels + tone_index) * 3) != 0)
+                .expect("active channel should contain a non-zero tone sample");
+            for channel in 0..channels {
+                let sample = decode_s24_native(&pcm, (frame * channels + channel) * 3);
+                if channel == tone_index {
+                    assert_ne!(sample, 0, "tone {tone_index} should be present");
+                } else {
+                    assert_eq!(sample, 0, "tone {tone_index} leaked into channel {channel}");
+                }
+            }
+        }
+    }
+}
+
+fn decode_s24_native(pcm: &[u8], offset: usize) -> i32 {
+    let value = if cfg!(target_endian = "little") {
+        i32::from(pcm[offset])
+            | (i32::from(pcm[offset + 1]) << 8)
+            | (i32::from(pcm[offset + 2]) << 16)
+    } else {
+        (i32::from(pcm[offset]) << 16)
+            | (i32::from(pcm[offset + 1]) << 8)
+            | i32::from(pcm[offset + 2])
+    };
+    if value & 0x80_0000 == 0 {
+        value
+    } else {
+        value | !0xFF_FFFF
+    }
 }
 
 #[test]

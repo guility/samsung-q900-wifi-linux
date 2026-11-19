@@ -73,8 +73,19 @@ Use the same layout at both ends. The sender temporarily sets its multichannel v
 
 The receiver checks the active PipeWire channel count and channel positions before loading modules. It receives RTP into an internal sink with the stream's channel order, then maps channel positions to the selected HDMI sink. For Pro Audio sinks with raw AUX positions, it creates a remap sink with the standard HDMI channel map and refuses to start unless PipeWire reports the corresponding HDMI port connected. This preserves the side/rear channel distinction in 7.1 without treating an unconnected Pro Audio device as hardware acceptance. PipeWire provides explicit master and output channel maps for this remap ([module-remap-sink](https://pipewire.pages.freedesktop.org/pipewire/page_pulse_module_remap_sink.html)). Run `--dry-run` first to inspect a configuration.
 
+## Check HDMI LPCM channel mapping
+
+After connecting the Linux HDMI output directly to Q900T HDMI IN 1 or 2, select the matching HDMI input on the soundbar and run the channel check against the active HDMI sink:
+
+```sh
+cargo run -- lpcm-check --sink alsa_output.YOUR_HDMI_CARD.HiFi__Pro__sink --layout 5.1
+cargo run -- lpcm-check --sink alsa_output.YOUR_HDMI_CARD.HiFi__Pro__sink --layout 7.1
+```
+
+The command validates the sink's channel map and, for a Pro Audio sink with AUX positions, confirms the associated HDMI port is connected. It then plays one quiet 24-bit/48 kHz tone at a time. The printed order includes each channel name and frequency so you can record where each tone is heard. It uses temporary PipeWire nodes and does not change the system default sink or application routes. This is a manual listening check of the HDMI LPCM leg; it does not verify the Wi-Fi RTP path or acoustic synchronization. Inspect ALSA ELD as well, especially when using a standard HDMI sink, and preview the route with `--dry-run` first.
+
 ## Current verification limits
 
-The Rust acceptance tests check 5.1/7.1 channel maps, RTP module plans, PipeWire sink parsing, Pro Audio HDMI-port availability, rejection of incompatible outputs, and analysis of acoustic sync observations. The host-only RTP acceptance script sends a distinct tone on every channel through a simulated AUX sink and checks channel identity after the receiver mapping. On this host, the NVIDIA Pro Audio sinks expose eight AUX channels but all HDMI ELD entries report no monitor, so the receiver rejects them for hardware playback. The Q900T itself is visible only as a two-channel Bluetooth sink; cross-host Wi-Fi, HDMI LPCM to the soundbar, and acoustic synchronization remain unverified in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
+The Rust acceptance tests check 5.1/7.1 channel maps, RTP module plans, isolated LPCM channel-test data, PipeWire sink parsing, Pro Audio HDMI-port availability, rejection of incompatible outputs, and analysis of acoustic sync observations. The host-only RTP acceptance script sends a distinct tone on every channel through a simulated AUX sink and checks channel identity after the receiver mapping. The `lpcm-check` command has also been exercised against a temporary virtual 8-channel sink; this verifies the CLI and PipeWire routing, not Q900T playback. On this host, the NVIDIA Pro Audio sinks expose eight AUX channels but all HDMI ELD entries report no monitor, so the receiver rejects them for hardware playback. The Q900T itself is visible only as a two-channel Bluetooth sink; cross-host Wi-Fi, HDMI LPCM to the soundbar, and acoustic synchronization remain unverified in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
 Acceptance scenarios are recorded in [`acceptance/multichannel.feature`](acceptance/multichannel.feature). Research reports are stored under `research/` on short-lived `research/<topic>` branches and linked from the relevant decision issues.
