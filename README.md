@@ -2,9 +2,11 @@
 
 An experimental Rust bridge that routes Linux system audio to a PipeWire virtual sink, mirrors it to a local output, and sends uncompressed PCM over RTP/Wi-Fi. The sender supports stereo (2 channels), 5.1 (6 channels), and 7.1 (8 channels), using 24-bit/48 kHz PCM. This avoids Bluetooth audio codecs such as SBC on the RTP bridge path.
 
+The user confirmed that the host cannot connect HDMI directly to the Q900T, so the immediate hardware milestone is stereo. The above-SBC quality requirement still applies: the Q900T's current Bluetooth connection negotiates SBC, so Bluetooth mirroring is only a routing baseline. A candidate higher-quality path is raw PCM RTP to a Linux receiver, then stereo PCM over optical S/PDIF to the Q900T. The host exposes a USB S/PDIF sink, but its physical optical connection and audible Q900T playback have not been confirmed. See [the optical capability report](research/q900t-optical-spdif.md) and [the receiver hardware decision](https://github.com/guility/samsung-q900-wifi-linux/issues/14).
+
 The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 2.304 Mbit/s for stereo, 6.912 Mbit/s for 5.1, and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The same-host loopback checks channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
 
-The bridge's multichannel requirement is discrete 5.1 or 7.1 PCM (six or eight input channels). Samsung's 7.1.2 label describes the Q900T speaker configuration; it does not by itself confirm that HDMI accepts discrete 7.1.2 LPCM. This MVP does not claim independent height-channel input.
+When multichannel is tested, 5.1 or 7.1 means six or eight discrete PCM input channels. Samsung's 7.1.2 label describes the Q900T speaker configuration; it does not by itself confirm that HDMI accepts discrete 7.1.2 LPCM. This MVP does not claim independent height-channel input, and the immediate hardware milestone is stereo.
 
 The destination and open product decisions are tracked in the [Wayfinder map](https://github.com/guility/samsung-q900-wifi-linux/issues/1). Implementation work is tracked in [issue #10](https://github.com/guility/samsung-q900-wifi-linux/issues/10); direct Q900T HDMI LPCM acceptance is pending in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12).
 
@@ -43,7 +45,7 @@ cargo run -- sender --layout stereo \
 cargo run -- receiver --layout stereo --sink YOUR_RECEIVER_STEREO_SINK
 ```
 
-If the receiver's optical output is connected to the Q900T, the host-to-receiver leg stays wireless and the final receiver-to-soundbar leg is wired. This is a candidate stereo route only: the current host exposes a USB S/PDIF sink as 16-bit/48 kHz stereo, but its physical port availability and connection to Q900T have not been verified. A separate Wi-Fi receiver and optical cable may be needed; the user has not yet decided whether that hardware is in scope in [issue #14](https://github.com/guility/samsung-q900-wifi-linux/issues/14). No Q900T playback or acoustic synchronization result is claimed.
+If the receiver's optical output is connected to the Q900T, the host-to-receiver leg stays wireless and the final receiver-to-soundbar leg is wired. The current host also exposes a USB S/PDIF sink as 16-bit/48 kHz stereo; it could verify the soundbar's optical stereo input directly if its optical port and a TOSLINK connection are available. That direct test would not verify Wi-Fi delivery to a second receiver. The USB adapter's physical port availability, cable connection, Q900T playback, and acoustic synchronization remain unverified. The choice to add a separate Wi-Fi receiver is still open in [issue #14](https://github.com/guility/samsung-q900-wifi-linux/issues/14). No Q900T playback or acoustic synchronization result is claimed.
 
 ## Build and inspect
 
