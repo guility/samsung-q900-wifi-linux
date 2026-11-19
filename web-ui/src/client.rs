@@ -1,5 +1,6 @@
 use crate::{
-    ApiError, MicrophoneDevice, MirrorPreview, PlaybackDevice, SelectedOutput, UiState, WebSettings,
+    ApiError, CalibrationResult, MicrophoneDevice, MirrorPreview, PlaybackDevice, SelectedOutput,
+    UiState, WebSettings,
 };
 use gloo_net::http::{Request, Response};
 use serde::de::DeserializeOwned;
@@ -18,8 +19,20 @@ fn App() -> Html {
     let server_state = use_state(|| None::<UiState>);
     let settings = use_state(WebSettings::default);
     let preview = use_state(|| None::<String>);
+    let calibration_plan = use_state(|| None::<String>);
+    let calibration_result = use_state(|| None::<CalibrationResult>);
     let status = use_state(|| "Загружаю устройства PipeWire…".to_owned());
     let busy = use_state(|| true);
+
+    {
+        let calibration_plan = calibration_plan.clone();
+        let calibration_result = calibration_result.clone();
+        use_effect_with((*settings).clone(), move |_| {
+            calibration_plan.set(None);
+            calibration_result.set(None);
+            || ()
+        });
+    }
 
     {
         let server_state = server_state.clone();
@@ -203,11 +216,126 @@ fn App() -> Html {
         })
     };
 
+    let on_calibration_preview = {
+        let settings = settings.clone();
+        let calibration_plan = calibration_plan.clone();
+        let status = status.clone();
+        let busy = busy.clone();
+        Callback::from(move |_| {
+            if settings.outputs.len() < 2 || settings.selected_microphone.is_none() {
+                status.set("Выберите микрофон и не менее двух выходов.".to_owned());
+                return;
+            }
+            busy.set(true);
+            status.set("Проверяю план калибровки без воспроизведения…".to_owned());
+            calibration_plan.set(None);
+            let selected = (*settings).clone();
+            let calibration_plan = calibration_plan.clone();
+            let status = status.clone();
+            let busy = busy.clone();
+            spawn_local(async move {
+                let result = async {
+                    save_settings_remote(&selected).await?;
+                    post_calibration_preview().await
+                }
+                .await;
+                match result {
+                    Ok(plan) => {
+                        calibration_plan.set(Some(plan.output));
+                        status.set("План готов; звук не воспроизводился.".to_owned());
+                    }
+                    Err(error) => status.set(format!("Ошибка: {error}")),
+                }
+                busy.set(false);
+            });
+        })
+    };
+
+    let on_calibrate = {
+        let settings = settings.clone();
+        let calibration_result = calibration_result.clone();
+        let status = status.clone();
+        let busy = busy.clone();
+        Callback::from(move |_| {
+            if settings.outputs.len() < 2 || settings.selected_microphone.is_none() {
+                status.set("Выберите микрофон и не менее двух выходов.".to_owned());
+                return;
+            }
+            busy.set(true);
+            status.set("Записываю ответы выходов на тестовые сигналы…".to_owned());
+            calibration_result.set(None);
+            let selected = (*settings).clone();
+            let calibration_result = calibration_result.clone();
+            let status = status.clone();
+            let busy = busy.clone();
+            spawn_local(async move {
+                let result = async {
+                    save_settings_remote(&selected).await?;
+                    post_calibration_run().await
+                }
+                .await;
+                match result {
+                    Ok(result) => {
+                        calibration_result.set(Some(result));
+                        status.set(
+                            "Измерения готовы. Проверьте задержки и примените их отдельно."
+                                .to_owned(),
+                        );
+                    }
+                    Err(error) => status.set(format!("Ошибка калибровки: {error}")),
+                }
+                busy.set(false);
+            });
+        })
+    };
+
+    let on_apply_calibration = {
+        let settings = settings.clone();
+        let calibration_result = calibration_result.clone();
+        let status = status.clone();
+        let busy = busy.clone();
+        Callback::from(move |_| {
+            let Some(result) = (*calibration_result).clone() else {
+                return;
+            };
+            let mut next = (*settings).clone();
+            for output in result.outputs {
+                if let Some(selected) = next
+                    .outputs
+                    .iter_mut()
+                    .find(|item| item.sink == output.sink)
+                {
+                    selected.delay_ms = output.delay_ms;
+                }
+            }
+            settings.set(next.clone());
+            remember_settings(&next);
+            busy.set(true);
+            status.set("Применяю предложенные задержки к настройкам…".to_owned());
+            let status = status.clone();
+            let busy = busy.clone();
+            spawn_local(async move {
+                match save_settings_remote(&next).await {
+                    Ok(()) => status.set("Задержки применены к выбранным выходам.".to_owned()),
+                    Err(error) => status.set(format!("Ошибка: {error}")),
+                }
+                busy.set(false);
+            });
+        })
+    };
+
     let state = (*server_state).clone();
     let selected_count = settings.outputs.len();
     let is_running = state.as_ref().is_some_and(|state| state.mirror_running);
     let can_start = selected_count >= 2 && !is_running && !*busy;
     let can_stop = is_running && !*busy;
+    let can_calibrate = state
+        .as_ref()
+        .is_some_and(|state| state.calibration_available)
+        && settings.selected_microphone.is_some()
+        && selected_count >= 2
+        && !is_running
+        && !*busy;
     let status_class = if status.starts_with("Ошибка") {
         "status error"
     } else if status.contains("остановлено") || status.contains("обновлены") {
@@ -241,7 +369,7 @@ fn App() -> Html {
                 <label for="microphone-select">{ "Источник захвата" }</label>
                 { render_microphone_select(&state, &settings, on_microphone_change) }
                 <p class="hint">
-                    { "Выбор Logitech BRIO сохраняется для автоматической акустической калибровки. Измерение пробным сигналом ещё не подключено." }
+                    { "Выберите микрофон в точке прослушивания. Калибровка запишет его стереоканалы одной временной шкалой." }
                 </p>
             </section>
 
@@ -259,6 +387,40 @@ fn App() -> Html {
                 <p class="hint">
                     { "Системный звук поступит на все выбранные выходы. Задержка добавляется к конкретному выходу." }
                 </p>
+            </section>
+
+            <section class="card" aria-labelledby="calibration-title">
+                <div class="section-head">
+                    <div>
+                        <div class="step">{ "Измерение" }</div>
+                        <h2 id="calibration-title">{ "Акустическая калибровка" }</h2>
+                    </div>
+                </div>
+                <p class="hint">
+                    { "Пробный запуск воспроизведёт три коротких широкополосных сигнала одновременно на всех выбранных выходах (пик 10% FS). По возможности остановите другие источники звука. Задержки не изменятся, пока вы отдельно не нажмёте «Применить»." }
+                </p>
+                <div class="actions">
+                    <button class="secondary" type="button" onclick={on_calibration_preview} disabled={selected_count < 2 || settings.selected_microphone.is_none() || *busy}>
+                        { "Предпросмотр калибровки" }
+                    </button>
+                    <button type="button" onclick={on_calibrate} disabled={!can_calibrate}>
+                        { "Измерить задержки" }
+                    </button>
+                </div>
+                if let Some(output) = (*calibration_plan).as_ref() {
+                    <pre class="preview">{ output.clone() }</pre>
+                }
+                if let Some(result) = (*calibration_result).as_ref() {
+                    { render_calibration_result(result) }
+                    <button
+                        class="secondary apply-calibration"
+                        type="button"
+                        onclick={on_apply_calibration}
+                        disabled={!result.matches_settings(&settings) || *busy}
+                    >
+                        { "Применить предложенные задержки" }
+                    </button>
+                }
             </section>
 
             <section class="card" aria-labelledby="control-title">
@@ -281,11 +443,34 @@ fn App() -> Html {
                 }
             </section>
 
-            <p class="calibration-note">
-                { "Автоматическая калибровка воспроизведёт короткий тестовый сигнал и покажет измеренные задержки до их применения." }
-            </p>
             <footer>{ "Локальная панель. Сервис принимает запросы только от loopback-адресов." }</footer>
         </main>
+    }
+}
+
+fn render_calibration_result(result: &CalibrationResult) -> Html {
+    html! {
+        <div class="calibration-report" aria-live="polite">
+            <p>
+                { format!("{} измерения · медианное расхождение {:.3} мс · максимум {:.3} мс", result.repetitions, result.median_relative_skew_ms, result.maximum_relative_skew_ms) }
+            </p>
+            { for result.outputs.iter().map(|output| html! {
+                <article class="calibration-output">
+                    <h3>{ output.sink.clone() }</h3>
+                    <p>
+                        { format!("Приход: {:.3} мс · диапазон {:.3}–{:.3} мс", output.median_arrival_ms, output.minimum_arrival_ms, output.maximum_arrival_ms) }
+                    </p>
+                    <p>
+                        { format!("Уверенность: {:.3} · отношение пика к боковому: {:.2} · предложенная задержка: {} мс", output.confidence, output.peak_to_sidelobe_ratio, output.delay_ms) }
+                    </p>
+                    <p class="measurement-list">
+                        { for output.measurements.iter().enumerate().map(|(index, measurement)| html! {
+                            <span>{ format!("#{}, {:.3} мс (уверенность {:.3})", index + 1, measurement.arrival_ms, measurement.confidence) }</span>
+                        }) }
+                    </p>
+                </article>
+            }) }
+        </div>
     }
 }
 
@@ -510,18 +695,23 @@ async fn save_settings_remote(settings: &WebSettings) -> Result<(), String> {
 }
 
 async fn post_control(path: &str) -> Result<UiState, String> {
-    let response = Request::post(path)
-        .header("Content-Type", "application/json")
-        .body("{}")
-        .map_err(|error| error.to_string())?
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    decode_response(response).await
+    post_empty(path).await
 }
 
 async fn post_preview() -> Result<MirrorPreview, String> {
-    let response = Request::post("/api/mirror/preview")
+    post_empty("/api/mirror/preview").await
+}
+
+async fn post_calibration_preview() -> Result<MirrorPreview, String> {
+    post_empty("/api/calibration/preview").await
+}
+
+async fn post_calibration_run() -> Result<CalibrationResult, String> {
+    post_empty("/api/calibration/run").await
+}
+
+async fn post_empty<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+    let response = Request::post(path)
         .header("Content-Type", "application/json")
         .body("{}")
         .map_err(|error| error.to_string())?

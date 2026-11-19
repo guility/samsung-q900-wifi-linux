@@ -988,3 +988,25 @@ fn write_executable(path: &std::path::Path, content: &str) {
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).unwrap();
 }
+
+#[test]
+fn calibration_dry_run_lists_the_microphone_and_parallel_output_routes() {
+    let output = run_cli(&[
+        "calibrate",
+        "--microphone",
+        "brio-source",
+        "--output",
+        "hdmi-sink",
+        "--output",
+        "q900t-sink",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Calibration dry run"));
+    assert!(stdout.contains("microphone: brio-source"));
+    assert!(stdout.contains("hdmi-sink"));
+    assert!(stdout.contains("q900t-sink"));
+    assert!(stdout.contains("no audio was played"));
+}

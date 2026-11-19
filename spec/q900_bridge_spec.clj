@@ -27,4 +27,5 @@
       (should-contain "stereo" out)
       (should-contain "7.1" out)
       (should-contain "--output SINK_NAME[=DELAY_MS]" out)
-      (should-contain "Microphone-based automatic calibration is planned" out))))
+      (should-contain "q900-bridge calibrate --microphone SOURCE --output SINK" out)
+      (should-contain "does not change delays automatically" out))))

@@ -1,3 +1,4 @@
+use q900_bridge::calibration::{self, calibration_plan};
 use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::sync::{OutputPath, analyze_sync, parse_sync_csv};
 use q900_bridge::{
@@ -9,12 +10,13 @@ use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod web;
 
@@ -44,8 +46,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "lpcm-check" => run_lpcm_check(parse_lpcm_check_args(&args[1..])?),
         "sync-report" => run_sync_report(&args[1..]),
         "web" => run_web(&args[1..]),
+        "calibrate" => run_calibration(parse_calibration_args(&args[1..])?),
         other => Err(format!(
-            "unknown command {other:?}; expected mirror, sender, receiver, lpcm-check, sync-report, or web"
+            "unknown command {other:?}; expected mirror, sender, receiver, lpcm-check, sync-report, calibrate, or web"
         )),
     }
 }
@@ -130,6 +133,490 @@ struct LpcmCheckArgs {
     tone_ms: u32,
     gap_ms: u32,
     dry_run: bool,
+}
+
+struct CalibrationArgs {
+    microphone: String,
+    outputs: Vec<String>,
+    dry_run: bool,
+    json: bool,
+}
+
+fn parse_calibration_args(args: &[String]) -> Result<CalibrationArgs, String> {
+    let mut microphone = None;
+    let mut outputs = Vec::new();
+    let mut dry_run = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--microphone" => {
+                if microphone.is_some() {
+                    return Err("--microphone may be specified only once".to_owned());
+                }
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--microphone requires SOURCE_NAME".to_owned())?;
+                validate_sink_token(value)?;
+                microphone = Some(value.clone());
+                index += 2;
+            }
+            "--output" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--output requires SINK_NAME".to_owned())?;
+                validate_sink_token(value)?;
+                if outputs.contains(value) {
+                    return Err(format!("output {value:?} is selected more than once"));
+                }
+                outputs.push(value.clone());
+                index += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            other => return Err(format!("unknown option {other:?}")),
+        }
+    }
+    let microphone =
+        microphone.ok_or_else(|| "calibrate requires --microphone SOURCE_NAME".to_owned())?;
+    if outputs.len() < 2 {
+        return Err("calibrate requires at least two --output SINK_NAME values".to_owned());
+    }
+    if dry_run && json {
+        return Err("--dry-run and --json cannot be combined".to_owned());
+    }
+    Ok(CalibrationArgs {
+        microphone,
+        outputs,
+        dry_run,
+        json,
+    })
+}
+
+fn run_calibration(args: CalibrationArgs) -> Result<(), String> {
+    let plan = calibration_plan(&args.microphone, &args.outputs, std::process::id())?;
+    if args.dry_run {
+        print_calibration_plan(&plan);
+        return Ok(());
+    }
+    validate_calibration_devices(&plan)?;
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&interrupted);
+    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
+        .map_err(|error| format!("could not install Ctrl-C handler: {error}"))?;
+
+    if !args.json {
+        eprintln!(
+            "Calibration will play {} low-level coded probes through {} output(s), captured by {} at {} Hz.",
+            plan.repetitions,
+            plan.outputs.len(),
+            plan.microphone,
+            plan.sample_rate
+        );
+        eprintln!(
+            "Probe peak is 10% full scale; playback stream gain is 100%, device volume is unchanged."
+        );
+        eprintln!("No system default route or device volume will be changed.");
+    }
+
+    let module_ids = load_modules(&plan.modules)?;
+    let result = run_calibration_measurements(&plan, &interrupted);
+    let cleanup = unload_modules(&module_ids);
+    let report = match (result, cleanup) {
+        (Ok(report), Ok(())) => report,
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Err(error)) => {
+            return Err(format!("calibration completed but cleanup failed: {error}"));
+        }
+        (Err(error), Err(cleanup)) => {
+            return Err(format!("{error}; calibration cleanup failed: {cleanup}"));
+        }
+    };
+
+    if args.json {
+        println!("{}", calibration_report_json(&report));
+    } else {
+        print_calibration_report(&report);
+    }
+    Ok(())
+}
+
+fn print_calibration_plan(plan: &q900_bridge::calibration::CalibrationPlan) {
+    println!("Calibration dry run");
+    println!("  microphone: {}", plan.microphone);
+    println!("  outputs: {}", plan.outputs.join(", "));
+    println!(
+        "  probe: {} Hz, {} coded channels, 10% peak level",
+        plan.sample_rate,
+        plan.outputs.len()
+    );
+    println!("  repetitions: {}", plan.repetitions);
+    println!("  route modules:");
+    for module in &plan.modules {
+        println!("    {} {}", module.name, module.args.join(" "));
+    }
+    println!("  playback: one synchronized multichannel probe stream");
+    println!("  no audio was played; system routes were not changed.");
+}
+
+fn validate_calibration_devices(
+    plan: &q900_bridge::calibration::CalibrationPlan,
+) -> Result<(), String> {
+    let sources = pactl_output(&["list", "short", "sources"])?;
+    let microphone_available = sources.lines().any(|line| {
+        let fields: Vec<_> = line.split('\t').collect();
+        fields
+            .get(1)
+            .is_some_and(|name| *name == plan.microphone && !name.ends_with(".monitor"))
+    });
+    if !microphone_available {
+        return Err(format!(
+            "microphone source {:?} is not currently available",
+            plan.microphone
+        ));
+    }
+    for output in &plan.outputs {
+        let sink = find_pipewire_sink(output)?;
+        validate_stereo_sink(&sink, "calibration output")?;
+    }
+    Ok(())
+}
+
+fn run_calibration_measurements(
+    plan: &q900_bridge::calibration::CalibrationPlan,
+    interrupted: &Arc<AtomicBool>,
+) -> Result<calibration::CalibrationReport, String> {
+    let directory = TemporaryDirectory::create()?;
+    let probes: Vec<_> = (0..plan.outputs.len())
+        .map(|index| calibration::generate_probe(plan.sample_rate, index))
+        .collect::<Result<_, _>>()?;
+    let frame_count = probes.first().map(Vec::len).unwrap_or_default();
+    if probes.iter().any(|probe| probe.len() != frame_count) {
+        return Err("generated calibration probes have different lengths".to_owned());
+    }
+    let playback_path = directory.path.join("probes.raw");
+    write_interleaved_f32(&playback_path, &probes)?;
+    let channel_map = (0..plan.outputs.len())
+        .map(|index| format!("aux{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut measurements = vec![Vec::with_capacity(plan.repetitions); plan.outputs.len()];
+    for repetition in 0..plan.repetitions {
+        let capture_path = directory.path.join(format!("capture-{repetition}.raw"));
+        let capture = capture_calibration_trial(
+            plan,
+            &playback_path,
+            &capture_path,
+            &channel_map,
+            interrupted,
+        )?;
+        let mut failures = Vec::new();
+        for (index, (sink, probe)) in plan.outputs.iter().zip(&probes).enumerate() {
+            match calibration::estimate_arrival(probe, &capture, 2, plan.sample_rate) {
+                Ok(estimate) => measurements[index].push(estimate),
+                Err(error) => failures.push(format!("{sink:?}: {error}")),
+            }
+        }
+        if !failures.is_empty() {
+            let successful = plan
+                .outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, sink)| {
+                    measurements[index].last().map(|reading| {
+                        format!(
+                            "{sink:?}: {:.3} ms, confidence {:.3}",
+                            reading.arrival_ms, reading.confidence
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let successful = if successful.is_empty() {
+                String::new()
+            } else {
+                format!("; detected responses: {}", successful.join(", "))
+            };
+            return Err(format!(
+                "could not measure calibration repetition {}: {}{}",
+                repetition + 1,
+                failures.join("; "),
+                successful
+            ));
+        }
+        if !interrupted.load(Ordering::SeqCst) && repetition + 1 < plan.repetitions {
+            thread::sleep(Duration::from_millis(250));
+        }
+    }
+    calibration::build_report(
+        &plan.microphone,
+        &plan.outputs,
+        &measurements,
+        plan.sample_rate,
+    )
+}
+
+fn capture_calibration_trial(
+    plan: &q900_bridge::calibration::CalibrationPlan,
+    playback_path: &std::path::Path,
+    capture_path: &std::path::Path,
+    channel_map: &str,
+    interrupted: &Arc<AtomicBool>,
+) -> Result<Vec<f32>, String> {
+    const CAPTURE_MS: u32 = 2_000;
+    let capture_samples = plan.sample_rate * CAPTURE_MS / 1000;
+    let mut recorder = Command::new("pw-record")
+        .args([
+            "--raw",
+            "--format",
+            "f32",
+            "--rate",
+            &plan.sample_rate.to_string(),
+            "--channels",
+            "2",
+            "--channel-map",
+            "stereo",
+            "--target",
+            &plan.microphone,
+            "--latency",
+            "40ms",
+            "--sample-count",
+            &capture_samples.to_string(),
+        ])
+        .arg(capture_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not start PipeWire microphone capture: {error}"))?;
+
+    if let Err(error) = wait_for_start_window(interrupted, Duration::from_millis(500)) {
+        terminate_child(&mut recorder);
+        return Err(error);
+    }
+
+    let mut player = match Command::new("pw-play")
+        .args([
+            "--raw",
+            "--format",
+            "f32",
+            "--rate",
+            &plan.sample_rate.to_string(),
+            "--channels",
+            &plan.outputs.len().to_string(),
+            "--channel-map",
+            channel_map,
+            "--target",
+            &plan.bus_sink,
+            "--latency",
+            "40ms",
+            "--volume",
+            "1.0",
+        ])
+        .arg(playback_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(player) => player,
+        Err(error) => {
+            terminate_child(&mut recorder);
+            return Err(format!("could not start PipeWire probe playback: {error}"));
+        }
+    };
+
+    let player_status = match wait_for_child(&mut player, "probe playback", interrupted) {
+        Ok(status) => status,
+        Err(error) => {
+            terminate_child(&mut recorder);
+            return Err(error);
+        }
+    };
+    if !player_status.success() {
+        terminate_child(&mut recorder);
+        return Err(format!("pw-play exited with status {player_status}"));
+    }
+    let record_status = wait_for_child(&mut recorder, "microphone capture", interrupted)?;
+
+    let bytes = std::fs::read(capture_path)
+        .map_err(|error| format!("could not read microphone capture: {error}"))?;
+    let expected_bytes = capture_samples as usize * 2 * std::mem::size_of::<f32>();
+    if bytes.len() != expected_bytes {
+        return Err(format!(
+            "microphone capture was incomplete: got {} bytes, expected {expected_bytes} (pw-record status {record_status})",
+            bytes.len()
+        ));
+    }
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return Err("microphone capture ended in the middle of a sample".to_owned());
+    }
+    let samples = chunks
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect::<Vec<_>>();
+    if samples.len() < plan.sample_rate as usize * 2 {
+        return Err(format!(
+            "microphone capture was too short ({} samples)",
+            samples.len()
+        ));
+    }
+    Ok(samples)
+}
+
+fn write_interleaved_f32(path: &std::path::Path, probes: &[Vec<f32>]) -> Result<(), String> {
+    let frames = probes.first().map(Vec::len).unwrap_or_default();
+    let channels = probes.len();
+    let mut bytes = Vec::with_capacity(frames * channels * 4);
+    for frame in 0..frames {
+        for probe in probes {
+            bytes.extend_from_slice(&probe[frame].to_le_bytes());
+        }
+    }
+    std::fs::write(path, bytes)
+        .map_err(|error| format!("could not write {channels}-channel calibration probe: {error}"))
+}
+
+fn wait_for_start_window(interrupted: &AtomicBool, duration: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        if interrupted.load(Ordering::SeqCst) {
+            return Err("calibration was interrupted".to_owned());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+fn wait_for_child(
+    child: &mut Child,
+    description: &str,
+    interrupted: &AtomicBool,
+) -> Result<std::process::ExitStatus, String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if interrupted.load(Ordering::SeqCst) {
+            terminate_child(child);
+            return Err("calibration was interrupted".to_owned());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                terminate_child(child);
+                return Err(format!("could not check {description}: {error}"));
+            }
+        }
+        if Instant::now() >= deadline {
+            terminate_child(child);
+            return Err(format!("{description} did not finish within 15 seconds"));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn terminate_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+struct TemporaryDirectory {
+    path: PathBuf,
+}
+
+impl TemporaryDirectory {
+    fn create() -> Result<Self, String> {
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+        for _ in 0..8 {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|error| format!("system clock is invalid: {error}"))?
+                .as_nanos();
+            let serial = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "q900-calibration-{}-{timestamp}-{serial}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!("could not create calibration workspace: {error}"));
+                }
+            }
+        }
+        Err("could not allocate a unique calibration workspace".to_owned())
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn calibration_report_json(report: &calibration::CalibrationReport) -> serde_json::Value {
+    serde_json::json!({
+        "microphone": report.microphone,
+        "sample_rate": report.sample_rate,
+        "repetitions": report.repetitions,
+        "median_relative_skew_ms": report.median_relative_skew_ms,
+        "maximum_relative_skew_ms": report.maximum_relative_skew_ms,
+        "outputs": report.outputs.iter().map(|output| serde_json::json!({
+            "sink": output.sink,
+            "median_arrival_ms": output.median_arrival_ms,
+            "minimum_arrival_ms": output.minimum_arrival_ms,
+            "maximum_arrival_ms": output.maximum_arrival_ms,
+            "confidence": output.confidence,
+            "peak_to_sidelobe_ratio": output.peak_to_sidelobe_ratio,
+            "delay_ms": output.delay_ms,
+            "measurements": output.measurements.iter().map(|reading| serde_json::json!({
+                "arrival_ms": reading.arrival_ms,
+                "confidence": reading.confidence,
+                "peak_to_sidelobe_ratio": reading.peak_to_sidelobe_ratio,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn print_calibration_report(report: &calibration::CalibrationReport) {
+    println!(
+        "Calibration measurements using {} at {} Hz:",
+        report.microphone, report.sample_rate
+    );
+    println!("  repetitions: {}", report.repetitions);
+    println!(
+        "  median relative skew: {:.3} ms",
+        report.median_relative_skew_ms
+    );
+    println!(
+        "  maximum relative skew: {:.3} ms",
+        report.maximum_relative_skew_ms
+    );
+    for output in &report.outputs {
+        println!(
+            "  {}: median arrival {:.3} ms (range {:.3}–{:.3}), confidence {:.3}, proposed delay {} ms",
+            output.sink,
+            output.median_arrival_ms,
+            output.minimum_arrival_ms,
+            output.maximum_arrival_ms,
+            output.confidence,
+            output.delay_ms
+        );
+    }
+    println!("Proposed delays are not applied. Review them before updating mirror settings.");
 }
 
 fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
@@ -1069,7 +1556,7 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge mirror --output SINK_NAME[=DELAY_MS] --output SINK_NAME[=DELAY_MS]... [--latency-ms MS] [--dry-run]\n  q900-bridge web [--port PORT]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe web command serves a local PipeWire device selector at http://127.0.0.1:8765 by default. The mirror command routes stereo system audio to any number of selected PipeWire outputs; append =DELAY_MS to set a fixed delay for one output. Bluetooth A2DP may use SBC; optical S/PDIF carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to one local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through a selected output sink. Fixed delays do not compensate clock drift. Microphone-based automatic calibration is planned, but is not implemented yet."
+        "Usage:\n  q900-bridge mirror --output SINK_NAME[=DELAY_MS] --output SINK_NAME[=DELAY_MS]... [--latency-ms MS] [--dry-run]\n  q900-bridge calibrate --microphone SOURCE --output SINK --output SINK [--dry-run] [--json]\n  q900-bridge web [--port PORT]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe web command serves a local PipeWire device selector at http://127.0.0.1:8765 by default. The mirror command routes stereo system audio to any number of selected PipeWire outputs; append =DELAY_MS to set a fixed delay for one output. Bluetooth A2DP may use SBC; optical S/PDIF carries stereo PCM but requires a physical optical connection. The sender mirrors audio to one local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through a selected output sink. Fixed delays do not compensate clock drift. The calibrate command measures acoustic arrival times and proposes per-output fixed delays; it does not change delays automatically or correct clock drift."
     );
 }
 
@@ -1096,5 +1583,50 @@ mod web_command_tests {
             let args = ["--port".to_owned(), value.to_owned()];
             assert!(parse_web_port(&args).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod calibration_argument_tests {
+    use super::parse_calibration_args;
+
+    fn valid_args(extra: &[&str]) -> Vec<String> {
+        [
+            "--microphone",
+            "brio-source",
+            "--output",
+            "hdmi-sink",
+            "--output",
+            "q900t-sink",
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn calibration_json_mode_is_opt_in_and_dry_run_is_explicit() {
+        let defaults = parse_calibration_args(&valid_args(&[])).unwrap();
+        assert!(!defaults.dry_run);
+        assert!(!defaults.json);
+
+        let dry_run = parse_calibration_args(&valid_args(&["--dry-run"])).unwrap();
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.json);
+
+        let json = parse_calibration_args(&valid_args(&["--json"])).unwrap();
+        assert!(!json.dry_run);
+        assert!(json.json);
+    }
+
+    #[test]
+    fn calibration_json_output_cannot_be_combined_with_dry_run() {
+        let error = match parse_calibration_args(&valid_args(&["--dry-run", "--json"])) {
+            Ok(_) => panic!("dry run cannot request JSON report output"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("--dry-run and --json cannot be combined"));
     }
 }

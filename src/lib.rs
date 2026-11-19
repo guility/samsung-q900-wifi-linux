@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
+pub mod calibration;
 pub mod lpcm;
 pub mod sync;
 

@@ -8,8 +8,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use q900_bridge::{AudioLayout, SinkCapabilities, parse_pipewire_sinks, validate_receiver_sink};
 use q900_web_ui::{
-    ApiError as ErrorBody, MicrophoneDevice, MirrorPreview, PlaybackDevice, SelectedOutput,
-    UiState, WebSettings,
+    ApiError as ErrorBody, CalibrationResult, MicrophoneDevice, MirrorPreview, PlaybackDevice,
+    SelectedOutput, UiState, WebSettings,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,6 +33,8 @@ struct WebStateInner {
     executable: PathBuf,
     settings: Mutex<WebSettings>,
     mirror: Mutex<Option<Child>>,
+    operation: Mutex<()>,
+    calibration_running: Mutex<bool>,
 }
 
 struct ApiError {
@@ -41,25 +43,23 @@ struct ApiError {
 }
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
-            status: StatusCode::BAD_REQUEST,
+            status,
             message: message.into(),
         }
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, message)
     }
 
     fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: message.into(),
-        }
+        Self::new(StatusCode::CONFLICT, message)
     }
 
     fn internal(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.into(),
-        }
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, message)
     }
 }
 
@@ -86,6 +86,8 @@ impl WebState {
                     outputs: Vec::new(),
                 }),
                 mirror: Mutex::new(None),
+                operation: Mutex::new(()),
+                calibration_running: Mutex::new(false),
             }),
         }
     }
@@ -135,6 +137,22 @@ impl WebState {
             ));
         }
 
+        let _operation = self
+            .inner
+            .operation
+            .lock()
+            .map_err(|_| ApiError::internal("audio operation lock was poisoned"))?;
+        if *self
+            .inner
+            .calibration_running
+            .lock()
+            .map_err(|_| ApiError::internal("calibration lock was poisoned"))?
+        {
+            return Err(ApiError::conflict(
+                "acoustic calibration is already running",
+            ));
+        }
+
         let mut mirror = self
             .inner
             .mirror
@@ -167,6 +185,45 @@ impl WebState {
             .spawn()
             .map_err(|error| ApiError::internal(format!("could not start mirror: {error}")))?;
         *mirror = Some(child);
+        Ok(())
+    }
+
+    fn begin_calibration(&self) -> Result<(), ApiError> {
+        let _operation = self
+            .inner
+            .operation
+            .lock()
+            .map_err(|_| ApiError::internal("audio operation lock was poisoned"))?;
+        if self.mirror_running()? {
+            return Err(ApiError::conflict(
+                "stop audio mirroring before running acoustic calibration",
+            ));
+        }
+        let mut running = self
+            .inner
+            .calibration_running
+            .lock()
+            .map_err(|_| ApiError::internal("calibration lock was poisoned"))?;
+        if *running {
+            return Err(ApiError::conflict(
+                "acoustic calibration is already running",
+            ));
+        }
+        *running = true;
+        Ok(())
+    }
+
+    fn finish_calibration(&self) -> Result<(), ApiError> {
+        let _operation = self
+            .inner
+            .operation
+            .lock()
+            .map_err(|_| ApiError::internal("audio operation lock was poisoned"))?;
+        *self
+            .inner
+            .calibration_running
+            .lock()
+            .map_err(|_| ApiError::internal("calibration lock was poisoned"))? = false;
         Ok(())
     }
 
@@ -260,6 +317,8 @@ fn router(state: WebState) -> Router {
         .route("/api/mirror/preview", post(preview_mirror))
         .route("/api/mirror/start", post(start_mirror))
         .route("/api/mirror/stop", post(stop_mirror))
+        .route("/api/calibration/preview", post(preview_calibration))
+        .route("/api/calibration/run", post(run_calibration))
         .fallback_service(ServeDir::new(WEB_DIST_DIR).append_index_html_on_directories(true))
         .layer(middleware::from_fn(local_host_only))
         .with_state(state)
@@ -318,6 +377,91 @@ async fn stop_mirror(State(state): State<WebState>) -> Result<Json<UiState>, Api
     ui_state(&state)
 }
 
+async fn preview_calibration(
+    State(state): State<WebState>,
+) -> Result<Json<MirrorPreview>, ApiError> {
+    let settings = state.settings()?;
+    let devices = discover_devices().map_err(ApiError::internal)?;
+    validate_settings(&settings, &devices, true)?;
+    require_calibration_microphone(&settings)?;
+    let output = calibration_cli_output(&state.inner.executable, &settings, true, false)?;
+    Ok(Json(MirrorPreview { output }))
+}
+
+async fn run_calibration(
+    State(state): State<WebState>,
+) -> Result<Json<CalibrationResult>, ApiError> {
+    let settings = state.settings()?;
+    let devices = discover_devices().map_err(ApiError::internal)?;
+    validate_settings(&settings, &devices, true)?;
+    require_calibration_microphone(&settings)?;
+    state.begin_calibration()?;
+
+    let executable = state.inner.executable.clone();
+    let run_settings = settings.clone();
+    let joined =
+        tokio::task::spawn_blocking(move || calibration_cli_result(&executable, &run_settings))
+            .await;
+    let cleanup = state.finish_calibration();
+    cleanup?;
+    let result =
+        joined.map_err(|error| ApiError::internal(format!("calibration task failed: {error}")))?;
+    result.map(Json).map_err(ApiError::bad_request)
+}
+
+fn require_calibration_microphone(settings: &WebSettings) -> Result<(), ApiError> {
+    if settings.selected_microphone.is_none() {
+        return Err(ApiError::bad_request(
+            "select a microphone before running acoustic calibration",
+        ));
+    }
+    Ok(())
+}
+
+fn calibration_cli_output(
+    executable: &Path,
+    settings: &WebSettings,
+    dry_run: bool,
+    json: bool,
+) -> Result<String, ApiError> {
+    let microphone = settings
+        .selected_microphone
+        .as_deref()
+        .ok_or_else(|| ApiError::bad_request("select a microphone before calibration"))?;
+    let mut command = Command::new(executable);
+    command.arg("calibrate").arg("--microphone").arg(microphone);
+    for output in &settings.outputs {
+        command.arg("--output").arg(&output.sink);
+    }
+    if dry_run {
+        command.arg("--dry-run");
+    }
+    if json {
+        command.arg("--json");
+    }
+    let output = command
+        .output()
+        .map_err(|error| ApiError::internal(format!("could not run calibration: {error}")))?;
+    if !output.status.success() {
+        return Err(ApiError::bad_request(format!(
+            "calibration failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| ApiError::internal(format!("calibration output was not UTF-8: {error}")))
+}
+
+fn calibration_cli_result(
+    executable: &Path,
+    settings: &WebSettings,
+) -> Result<CalibrationResult, String> {
+    let output =
+        calibration_cli_output(executable, settings, false, true).map_err(|error| error.message)?;
+    serde_json::from_str(&output)
+        .map_err(|error| format!("could not parse calibration report: {error}"))
+}
+
 async fn local_host_only(request: Request<Body>, next: Next) -> Response {
     let headers = request.headers();
     let allowed_host = headers
@@ -370,8 +514,17 @@ fn ui_state(state: &WebState) -> Result<Json<UiState>, ApiError> {
         selected_microphone: settings.selected_microphone,
         selected_outputs: settings.outputs,
         mirror_running,
-        calibration_available: false,
+        calibration_available: calibration_tools_available(),
     }))
+}
+
+fn calibration_tools_available() -> bool {
+    ["pw-record", "pw-play"].iter().all(|program| {
+        Command::new(program)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
 }
 
 struct DeviceSnapshot {

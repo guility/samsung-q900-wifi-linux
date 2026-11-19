@@ -4,7 +4,7 @@ An experimental Rust bridge that routes Linux system audio through PipeWire to m
 
 The immediate implementation target is simple system-wide stereo fan-out to any selected PipeWire sinks, with per-output delay values. The user confirmed that host HDMI cannot connect directly to the Q900T. The host motherboard is an MSI MAG Z690 TOMAHAWK WIFI DDR4 with an optical S/PDIF output, but no TOSLINK cable currently connects it to the Q900T, so optical playback is unverified. The connected Q900T Bluetooth route negotiates SBC; use it as a routing baseline only. See [the optical capability report](research/q900t-optical-spdif.md).
 
-The user wants microphone-based automatic delay measurement. PipeWire exposes USB Audio Mic/Line and Logitech BRIO capture sources; the user confirmed that the BRIO is mounted about one metre above the Q900T. Automatic recording, signal correlation, and delay application are not implemented yet. The first fan-out version only supports manually supplied fixed delays. See the [calibration implementation issue](https://github.com/guility/samsung-q900-wifi-linux/issues/15), [web interface issue](https://github.com/guility/samsung-q900-wifi-linux/issues/16), and [synchronization decision](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
+The local WASM panel supports microphone calibration with a distinct low-level probe per selected output, three repeated captures on one BRIO clock, correlation-based arrival estimates, and fixed-delay proposals relative to the slowest path. The user reviews the measurements and applies proposals separately; the CLI mirror does not load a persistent calibration profile. Calibration aligns one microphone position and does not correct clock drift. See the [calibration implementation issue](https://github.com/guility/samsung-q900-wifi-linux/issues/15), [web interface issue](https://github.com/guility/samsung-q900-wifi-linux/issues/16), and [synchronization decision](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
 The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 2.304 Mbit/s for stereo, 6.912 Mbit/s for 5.1, and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The same-host loopback checks channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
 
@@ -34,7 +34,7 @@ cargo run -- mirror \
   --dry-run
 ```
 
-Remove `--dry-run` to route all system audio through the temporary stereo bus to every selected output. The command restores the prior default sink and stream routes on Ctrl-C. Each output must expose FL/FR; the CLI rejects duplicate sinks and requires at least two outputs. `--latency-ms` sets the common PipeWire buffer, while each `=DELAY_MS` adds an independent fixed delay from 0 to 2000 ms. This version does not measure delays automatically and does not compensate clock drift.
+Remove `--dry-run` to route all system audio through the temporary stereo bus to every selected output. The command restores the prior default sink and stream routes on Ctrl-C. Each output must expose FL/FR; the CLI rejects duplicate sinks and requires at least two outputs. `--latency-ms` sets the common PipeWire buffer, while each `=DELAY_MS` adds an independent fixed delay from 0 to 2000 ms. The CLI mirror uses manually supplied values; the web panel can measure and propose values separately. Fixed delays do not compensate clock drift.
 
 The optical sink on this host is `alsa_output.usb-Generic_USB_Audio-00.HiFi__SPDIF__sink` (`s16le`, 2 channels, 48 kHz). The motherboard has a physical optical connector, but the user reports that no TOSLINK cable connects it to the Q900T. `lpcm-check` can verify that PipeWire sends separate FL/FR tones to the sink, but that is not an audible Q900T acceptance check until a cable is connected.
 
@@ -48,7 +48,7 @@ The command confirms PipeWire accepted the channel test. It does not prove that 
 
 ## Local WebAssembly control panel
 
-The device selector is a Rust/Yew frontend compiled to WebAssembly and served by the Rust `web` command. The service binds only to `127.0.0.1`; the HTML shell and CSS contain no handwritten JavaScript. The panel lists PipeWire sources and stereo-capable sinks, lets you select a microphone and two or more outputs, and stores a manual delay per output. Its preview button runs the existing `mirror --dry-run` path and does not change playback. Starting the mirror is an explicit action; stopping it or closing the service restores the previous system route. Microphone selection is saved for calibration, but acoustic probe playback and automatic measurement are not implemented yet.
+The device selector is a Rust/Yew frontend compiled to WebAssembly and served by the Rust `web` command. The service binds only to `127.0.0.1`; the HTML shell and CSS contain no handwritten JavaScript. The panel lists PipeWire sources and stereo-capable sinks, lets you select a microphone and two or more outputs, and stores a manual delay per output. It can preview both mirror and calibration routes without playback. Calibration uses one multichannel probe stream with a distinct code for each selected sink, records all responses from the selected microphone, repeats three times, and proposes non-negative delays to align the earlier paths with the slowest path. The measured report is shown before a separate apply action; starting the system-wide mirror is also explicit.
 
 Build the WASM assets and start the local service:
 
@@ -61,9 +61,23 @@ cargo run -- web --port 8765
 
 Open <http://127.0.0.1:8765/>. The generated static assets live in `web-ui/dist`; rebuild them after changing the frontend.
 
+The calibration action plays three short coded probes at 10% full scale. Pause other audio for clearer measurements. It does not change device volume or apply delay automatically. Weak, clipped, or ambiguous captures are rejected; no delay proposal is applied when a selected output has no clear acoustic response.
+
+Inspect a calibration route without playing audio:
+
+```sh
+cargo run -- calibrate \
+  --microphone YOUR_PIPEWIRE_SOURCE \
+  --output YOUR_FIRST_STEREO_SINK \
+  --output YOUR_SECOND_STEREO_SINK \
+  --dry-run
+```
+
+Remove `--dry-run` to record the selected microphone and play the probes.
+
 ## Automatic microphone calibration
 
-The preferred next step is to play a known probe on each selected output, capture all arrivals with one microphone clock, estimate each path's acoustic delay, and apply fixed offsets to the earlier outputs. The Logitech BRIO microphone is mounted about one metre above the Q900T; its PipeWire source is `alsa_input.usb-046d_Logitech_BRIO_A3706C12-03.analog-stereo` (`s16le`, 2 channels, 48 kHz). No calibration recording has been made. Calibration at one microphone position aligns outputs there; room changes, movement, and long-term clock drift need separate handling. The implementation plan is tracked in [issue #15](https://github.com/guility/samsung-q900-wifi-linux/issues/15), the device-selection web interface in [issue #16](https://github.com/guility/samsung-q900-wifi-linux/issues/16), and measurement criteria in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
+The CLI accepts `calibrate --microphone SOURCE --output SINK --output SINK`; use `--dry-run` to inspect the module plan without playing audio. An actual run emits three short probes, records 48 kHz stereo from the chosen mic, and prints repeated arrivals, confidence, and proposed delays. The Logitech BRIO is mounted about one metre above the Q900T; its PipeWire source is `alsa_input.usb-046d_Logitech_BRIO_A3706C12-03.analog-stereo` (`s16le`, 2 channels, 48 kHz). A joint host trial with HDMI and Q900T Bluetooth detected the Q900T response at 1054.562 ms (correlation 0.304), but HDMI correlation was 0.113, below the 0.200 threshold; the run stopped after its first capture and applied no delays. PipeWire exposes the HDMI sink only after a profile change, while the HDMI port remains unavailable and ALSA ELD reports `monitor_present=0`. The original `off` profile and Bluetooth default route were restored after the test. Calibration at one microphone position aligns outputs there; room changes, movement, and long-term clock drift need separate handling. A persistent profile consumed automatically by the CLI and a repeatable HDMI hardware measurement remain open in [issue #15](https://github.com/guility/samsung-q900-wifi-linux/issues/15); the device-selection web interface is tracked in [issue #16](https://github.com/guility/samsung-q900-wifi-linux/issues/16), and measurement criteria in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
 ## Stereo RTP over Wi-Fi
 
@@ -79,7 +93,7 @@ cargo run -- sender --layout stereo \
 cargo run -- receiver --layout stereo --sink YOUR_RECEIVER_STEREO_SINK
 ```
 
-If a Linux receiver's optical output is connected to the Q900T, the host-to-receiver leg stays wireless and the final receiver-to-soundbar leg is wired. The current host exposes an S/PDIF sink as 16-bit/48 kHz stereo and its motherboard has an optical S/PDIF connector, but the user says no TOSLINK cable is connected to the Q900T. Direct optical playback, cross-host Wi-Fi delivery, automatic microphone calibration, and acoustic synchronization remain unverified. The decision about a separate Wi-Fi receiver remains open in [issue #14](https://github.com/guility/samsung-q900-wifi-linux/issues/14).
+If a Linux receiver's optical output is connected to the Q900T, the host-to-receiver leg stays wireless and the final receiver-to-soundbar leg is wired. The current host exposes an S/PDIF sink as 16-bit/48 kHz stereo and its motherboard has an optical S/PDIF connector, but the user says no TOSLINK cable is connected to the Q900T. Direct optical playback and cross-host Wi-Fi delivery remain unverified. Acoustic calibration is implemented, while the current HDMI hardware route did not return a measurable response at the BRIO. The decision about a separate Wi-Fi receiver remains open in [issue #14](https://github.com/guility/samsung-q900-wifi-linux/issues/14).
 
 ## Build and inspect
 
@@ -120,11 +134,11 @@ The `sync-report` command analyzes repeated acoustic arrival measurements from a
 cargo run -- sync-report --input acceptance/sample-sync-observations.csv
 ```
 
-The required columns are `elapsed_s,local_ms,q900_ms`. Both arrival columns must use the same recorder timebase; use a single microphone/recorder clock at the listening position. The example file is synthetic and demonstrates an 8 ms fixed offset only. The report fits fixed offset and linear drift for one local/Q900T pair, summarizes absolute skew and residual jitter, and recommends which output to delay. This input schema is still pair-specific; automatic microphone capture and multi-output analysis are planned.
+The required columns are `elapsed_s,local_ms,q900_ms`. Both arrival columns must use the same recorder timebase; use a single microphone/recorder clock at the listening position. The example file is synthetic and demonstrates an 8 ms fixed offset only. The report fits fixed offset and linear drift for one local/Q900T pair, summarizes absolute skew and residual jitter, and recommends which output to delay. This CSV command remains pair-specific; the separate `calibrate` command records and analyzes multiple output paths in one capture session.
 
 Apply a fixed-delay recommendation in `mirror` by appending `=N` to that output's `--output SINK` argument. These use PipeWire's explicit `pw-loopback --delay` control and accept 0–2000 ms. They compensate a fixed acoustic offset; they do not set it automatically or correct clock drift. The RTP receiver uses PipeWire's default constant-latency mode, which adjusts buffer consumption to track sender/receiver clock-rate differences. That mechanism does not guarantee acoustic alignment, so skew and drift still need measurement. The `--latency-ms` setting controls the RTP buffer target, not added delay or a synchronization guarantee ([PipeWire RTP source](https://pipewire.pages.freedesktop.org/pipewire/page_module_rtp_source.html), [RTP internals](https://pipewire.pages.freedesktop.org/pipewire/devel/page_rtp_module_internals.html)).
 
-The report does not record the microphone or alter playback timing itself. A measured output offset is not a video or game input-latency result. Use the separate acoustic, video, and game procedures in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2). The current 100 ms RTP settings remain buffers, not synchronization guarantees.
+The CSV report does not record the microphone or alter playback timing itself. The `calibrate` command records the selected mic and proposes per-output offsets, which the web panel applies only after a separate user action. A measured output offset is not a video or game input-latency result. Use the separate acoustic, video, and game procedures in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2). The current 100 ms RTP settings remain buffers, not synchronization guarantees.
 
 Start the sender on the source host:
 

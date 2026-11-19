@@ -108,12 +108,13 @@ Feature: PipeWire RTP audio bridge
     Then its HDMI output loopback adds a 25 millisecond output delay
     And the local sender output keeps the original timing
 
-  @planned
   Scenario: Calibrate relative output delays from a microphone
     Given a PipeWire microphone is placed at a fixed measurement point
     And two or more selected outputs can play a calibration probe
     When the user starts microphone calibration
-    Then it records each probe arrival on one capture clock
+    Then it plays one distinct coded probe per selected output and repeats the capture three times
+    And it records each probe arrival on one capture clock
     And it estimates relative output delay from the recorded signals
-    And it delays earlier outputs to align them at the microphone
+    And it proposes non-negative fixed delays for earlier outputs
+    And it changes no delay until the user applies the proposals
     And it does not claim to correct long-term clock drift
