@@ -1,4 +1,4 @@
-const MIN_PROBE_CORRELATION: f64 = 0.20;
+const MIN_PROBE_CORRELATION: f64 = 0.14;
 const MIN_PEAK_TO_SIDELOBE_RATIO: f64 = 1.15;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,16 +85,16 @@ pub fn estimate_arrival(
     else {
         return Err("capture has no usable channels".to_owned());
     };
+    let peak_to_sidelobe_ratio = confidence / sidelobe.max(1e-9);
     if confidence < MIN_PROBE_CORRELATION {
         return Err(format!(
-            "probe response is too weak (correlation {confidence:.3}; minimum {MIN_PROBE_CORRELATION:.3})"
+            "probe response is too weak (correlation {confidence:.3}; minimum {MIN_PROBE_CORRELATION:.3}; peak-to-sidelobe ratio {peak_to_sidelobe_ratio:.2})"
         ));
     }
-    if confidence / sidelobe.max(1e-9) < MIN_PEAK_TO_SIDELOBE_RATIO {
+    if peak_to_sidelobe_ratio < MIN_PEAK_TO_SIDELOBE_RATIO {
         return Err(format!(
             "probe response is ambiguous (peak-to-sidelobe ratio {:.2}; minimum {:.2})",
-            confidence / sidelobe.max(1e-9),
-            MIN_PEAK_TO_SIDELOBE_RATIO
+            peak_to_sidelobe_ratio, MIN_PEAK_TO_SIDELOBE_RATIO
         ));
     }
 
@@ -116,7 +116,7 @@ pub fn estimate_arrival(
         arrival_ms: sample_offset as f64 * 1000.0 / sample_rate as f64,
         channel_index,
         confidence,
-        peak_to_sidelobe_ratio: confidence / sidelobe.max(1e-9),
+        peak_to_sidelobe_ratio,
     })
 }
 

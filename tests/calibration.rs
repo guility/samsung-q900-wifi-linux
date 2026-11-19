@@ -225,6 +225,58 @@ fn estimates_probe_arrival_under_broadband_capture_noise() {
 }
 
 #[test]
+fn estimates_a_distinct_probe_with_the_weak_correlation_seen_on_hdmi() {
+    use q900_bridge::calibration::generate_probe;
+
+    let probe = generate_probe(48_000, 31).unwrap();
+    let expected_offset = 50_544;
+    let mut recording = vec![0.0; (expected_offset + probe.len()) * 2];
+    let mut left_state = 0x5a17_2f31_u32;
+    let mut right_state = 0x792b_4c13_u32;
+    for frame in 0..recording.len() / 2 {
+        left_state ^= left_state << 13;
+        left_state ^= left_state >> 17;
+        left_state ^= left_state << 5;
+        right_state ^= right_state << 13;
+        right_state ^= right_state >> 17;
+        right_state ^= right_state << 5;
+        let left_noise = ((left_state >> 8) as f32 / 8_388_607.5 - 1.0) * 0.00097;
+        let right_noise = ((right_state >> 8) as f32 / 8_388_607.5 - 1.0) * 0.00097;
+        recording[frame * 2] = left_noise;
+        recording[frame * 2 + 1] = right_noise;
+    }
+    for (index, sample) in probe.iter().enumerate() {
+        recording[(expected_offset + index) * 2 + 1] += sample * 0.001;
+    }
+
+    let estimate = estimate_arrival(&probe, &recording, 2, 48_000).unwrap();
+
+    assert_eq!(estimate.sample_offset, expected_offset);
+    assert_eq!(estimate.channel_index, 1);
+    assert!((0.15..0.18).contains(&estimate.confidence));
+    assert!(estimate.peak_to_sidelobe_ratio > 1.15);
+}
+
+#[test]
+fn random_capture_noise_without_the_probe_is_rejected() {
+    let mut state = 0x2345_6789_u32;
+    let recording: Vec<_> = (0..48_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            ((state >> 8) as f32 / 8_388_607.5 - 1.0) * 0.00105
+        })
+        .collect();
+    let probe = q900_bridge::calibration::generate_probe(48_000, 31).unwrap();
+
+    let error = estimate_arrival(&probe, &recording, 1, 48_000).unwrap_err();
+
+    assert!(error.contains("too weak") || error.contains("ambiguous"));
+    assert!(error.contains("peak-to-sidelobe ratio"));
+}
+
+#[test]
 fn rejects_silence_and_clipped_probe_recordings() {
     use q900_bridge::calibration::generate_probe;
 
@@ -297,7 +349,7 @@ fn build_report_rejects_a_measurement_below_either_quality_threshold() {
         vec![arrival_estimate(100.0); 3],
         vec![arrival_estimate(200.0); 3],
     ];
-    readings[0][0].confidence = 0.199;
+    readings[0][0].confidence = 0.139;
     assert!(build_report("brio", &outputs, &readings, 48_000).is_err());
 
     readings[0][0] = arrival_estimate(100.0);
