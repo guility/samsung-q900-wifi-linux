@@ -7,13 +7,14 @@
 | Acceptance behavior | Rust check |
 | --- | --- |
 | 5.1 and 7.1 use six and eight channels | `accepts_only_explicit_51_and_71_layouts` |
+| Stereo mirror fans out to local and Q900 Bluetooth sinks with independent delay controls | `stereo_mirror_plan_fans_out_to_local_and_bluetooth_outputs`, `mirror_dry_run_shows_two_stereo_outputs_and_independent_delays`, and `mirror_restores_routes_and_stops_both_output_loopbacks_after_sigint` |
 | Sender keeps 7.1 as 24-bit PCM and mirrors to the selected sink | `sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink` and `sender_dry_run_shows_eight_channel_pcm_plan` |
 | Receiver keeps RTP channel order internally and remaps all channels to the selected output | `receiver_plan_selects_pcm_format_layout_and_latency` and the 5.1/7.1 tone identity checks in `loopback.sh` |
 | Receiver accepts only matching active output channel maps | `receiver_accepts_71_sink_for_51_and_71`, `receiver_rejects_stereo_sink_for_multichannel_layout`, and `receiver_rejects_missing_channel_positions_even_if_count_is_high_enough` |
 | LPCM test data isolates every 5.1/7.1 channel with 24-bit native-endian samples, silent gaps, and bounded durations; `lpcm-check` streams the tones and removes temporary PipeWire nodes without changing existing routes | `lpcm_channel_tones_are_separate_and_use_24_bit_native_endian_samples`, the duration-boundary acceptance checks, `lpcm_check_dry_run_lists_51_channels_without_changing_default_routes`, `lpcm_check_refuses_71_on_a_six_channel_sink`, and `lpcm_check_plays_native_24_bit_pcm_and_restores_temporary_pipewire_nodes` |
 | Pro Audio AUX channels are mapped to HDMI order and require a connected HDMI port on ALSA devices | `receiver_remaps_pro_audio_aux_sink_and_requires_a_connected_hdmi_route` |
 | Receiver reads the actual `pw-dump` position format | `parses_pipewire_dump_channel_positions_as_reported_by_pw_dump` |
-| Bluetooth/SBC is refused as the local mirror | `sender_refuses_bluetooth_sink_that_may_use_sbc` |
+| The multichannel sender refuses Bluetooth as its uncompressed local mirror; the stereo `mirror` command explicitly routes to Q900 Bluetooth, whose active A2DP codec may be SBC | `sender_refuses_bluetooth_sink_that_may_use_sbc` and the stereo mirror checks above |
 | Acoustic observations report fixed skew, drift, jitter, and compensation direction | `reports_fixed_skew_drift_and_compensation_from_acoustic_observations`, `recommends_delaying_q900_when_local_output_arrives_late`, and `sync_report_reads_acoustic_observations_from_csv` |
 | Fixed delay is applied to the recommended local or receiver output through PipeWire loopback | `sender_dry_run_shows_eight_channel_pcm_plan`, `receiver_dry_run_applies_fixed_output_delay`, and the sender/receiver Ctrl-C cleanup checks |
 

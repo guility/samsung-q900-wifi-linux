@@ -1,5 +1,13 @@
 Feature: Multichannel RTP audio bridge
 
+  Scenario: Mirror stereo system audio to the Q900 over Bluetooth
+    Given the local output and Q900 Bluetooth sink expose stereo FL and FR
+    When the user starts mirror with both sink names
+    Then it routes system audio through a two-channel 48 kHz virtual sink
+    And it creates independent stereo loopbacks to the local output and Q900
+    And it does not require an RTP receiver
+    And it reports that the active Q900 Bluetooth profile may use SBC
+
   Scenario: Send 5.1 PCM without using Bluetooth
     Given the sender has a non-Bluetooth local audio sink
     When the sender starts with layout 5.1

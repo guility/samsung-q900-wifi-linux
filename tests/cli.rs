@@ -50,6 +50,37 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
 }
 
 #[test]
+fn mirror_dry_run_shows_two_stereo_outputs_and_independent_delays() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "mirror",
+        "--local-sink",
+        "test_hdmi",
+        "--q900-sink",
+        "bluez_output.q900t",
+        "--local-delay-ms",
+        "85",
+        "--q900-delay-ms",
+        "12",
+        "--dry-run",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Stereo mirror plan: 2-channel s24be/48000 Hz"));
+    assert!(stdout.contains("channels=2"));
+    assert!(stdout.contains("Local output sink: test_hdmi"));
+    assert!(stdout.contains("Q900 Bluetooth sink: bluez_output.q900t"));
+    assert!(stdout.contains("--delay 0.085"));
+    assert!(stdout.contains("--delay 0.012"));
+    assert!(stdout.contains("may use SBC"));
+}
+
+#[test]
 fn sender_dry_run_binds_rtp_to_an_explicit_wifi_source_ip() {
     let output = run_cli(&[
         "sender",
@@ -449,6 +480,38 @@ fn sender_restores_default_and_unloads_modules_after_sigint() {
 }
 
 #[test]
+fn mirror_restores_routes_and_stops_both_output_loopbacks_after_sigint() {
+    let tools = FakeAudioTools::new();
+    let mut child = tools.launch(&[
+        "mirror",
+        "--local-sink",
+        "test_hdmi",
+        "--q900-sink",
+        "bluez_output.q900t",
+    ]);
+    let bus = wait_for_prefix(&tools.default_file, "q900_stereo_");
+    let loopbacks = wait_for_line_count(&tools.loopback_pid_file, 2);
+    wait_for_log(&tools.log_file, &format!("move-sink-input 10 {bus}"));
+    thread::sleep(Duration::from_millis(150));
+    stop_with_sigint(&mut child);
+
+    assert_eq!(
+        fs::read_to_string(&tools.default_file).unwrap(),
+        "original\n"
+    );
+    let log = fs::read_to_string(&tools.log_file).unwrap();
+    assert!(log.contains(&format!("set-default-sink {bus}")));
+    assert!(log.contains("set-default-sink original"));
+    assert!(log.contains("move-sink-input 10 original"));
+    assert_eq!(log.matches("load-module module-null-sink").count(), 1);
+    assert_eq!(log.matches("unload-module 100").count(), 1);
+    let loopback_log = fs::read_to_string(&tools.loopback_log_file).unwrap();
+    assert!(loopback_log.contains("q900_bridge_local_"));
+    assert!(loopback_log.contains("q900_bridge_q900_"));
+    assert_loopback_pids_stopped(&loopbacks);
+}
+
+#[test]
 fn sender_ignores_a_stream_that_disappears_during_routing() {
     let tools = FakeAudioTools::new_with_missing_move_once();
     let mut child = tools.launch(&[
@@ -486,17 +549,38 @@ fn receiver_loads_rtp_module_and_unloads_it_after_sigint() {
 }
 
 fn assert_loopback_process_stopped(path: &std::path::Path) {
-    let pid = fs::read_to_string(path).unwrap();
-    let status = Command::new("kill")
-        .args(["-0", pid.trim()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("kill command should be available");
-    assert!(
-        !status.success(),
-        "pw-loopback process {} is still running",
-        pid.trim()
+    let pids = fs::read_to_string(path).unwrap();
+    assert_loopback_pids_stopped(&pids);
+}
+
+fn assert_loopback_pids_stopped(pids: &str) {
+    for pid in pids.lines().filter(|pid| !pid.trim().is_empty()) {
+        let status = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("kill command should be available");
+        assert!(
+            !status.success(),
+            "pw-loopback process {} is still running",
+            pid.trim()
+        );
+    }
+}
+
+fn wait_for_line_count(path: &std::path::Path, expected: usize) -> String {
+    for _ in 0..200 {
+        if let Ok(value) = fs::read_to_string(path)
+            && value.lines().count() >= expected
+        {
+            return value;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!(
+        "timed out waiting for {expected} lines in {}",
+        path.display()
     );
 }
 
@@ -616,7 +700,7 @@ esac
             &bin.join("pw-dump"),
             r##"#!/bin/sh
 cat <<'JSON'
-[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}}]
+[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}}]
 JSON
 "##,
         );
@@ -624,7 +708,7 @@ JSON
             &bin.join("pw-loopback"),
             r##"#!/bin/sh
 printf '%s\n' "$*" >> "$Q900_FAKE_PW_LOOPBACK_LOG"
-printf '%s\n' "$$" > "$Q900_FAKE_PW_LOOPBACK_PID"
+printf '%s\n' "$$" >> "$Q900_FAKE_PW_LOOPBACK_PID"
 exec /usr/bin/sleep 60
 "##,
         );

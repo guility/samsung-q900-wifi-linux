@@ -1,7 +1,7 @@
 use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::{
-    AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
-    has_auxiliary_channel_map, parse_pipewire_sinks, receiver_plan, sender_plan,
+    AudioLayout, MirrorConfig, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
+    has_auxiliary_channel_map, mirror_plan, parse_pipewire_sinks, receiver_plan, sender_plan,
     validate_aux_hdmi_route, validate_receiver_sink,
 };
 use std::io::Cursor;
@@ -167,6 +167,40 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
     );
     assert_eq!(plan.local_mirror.latency_ms, 80);
     assert_eq!(plan.local_mirror.delay_ms, 37);
+}
+
+#[test]
+fn stereo_mirror_plan_fans_out_to_local_and_bluetooth_outputs() {
+    let config = MirrorConfig {
+        local_sink: "alsa_output.hdmi_stereo".to_owned(),
+        q900_sink: "bluez_output.q900t".to_owned(),
+        latency_ms: 100,
+        local_delay_ms: 85,
+        q900_delay_ms: 0,
+    };
+    let plan = mirror_plan("q900_stereo_test", &config);
+
+    assert_eq!(plan.bus_sink, "q900_stereo_test");
+    assert_eq!(plan.modules.len(), 1);
+    assert_eq!(plan.modules[0].name, "module-null-sink");
+    assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=2"));
+    assert!(plan.modules[0].args.iter().any(|arg| arg == "rate=48000"));
+    assert!(
+        plan.modules[0]
+            .args
+            .iter()
+            .any(|arg| arg == "channel_map=front-left,front-right")
+    );
+    assert_eq!(plan.local_output.capture, "q900_stereo_test");
+    assert_eq!(plan.local_output.playback, config.local_sink);
+    assert_eq!(plan.local_output.channels, 2);
+    assert_eq!(plan.local_output.channel_map, "[ FL FR ]");
+    assert_eq!(plan.local_output.delay_ms, 85);
+    assert_eq!(plan.q900_output.capture, "q900_stereo_test");
+    assert_eq!(plan.q900_output.playback, config.q900_sink);
+    assert_eq!(plan.q900_output.channels, 2);
+    assert_eq!(plan.q900_output.channel_map, "[ FL FR ]");
+    assert_eq!(plan.q900_output.delay_ms, 0);
 }
 
 #[test]
