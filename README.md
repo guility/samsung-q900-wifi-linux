@@ -9,7 +9,7 @@ The destination and open product decisions are tracked in the [Wayfinder map](ht
 - Linux with PipeWire, its PulseAudio compatibility server (`pactl`), and the `pw-loopback` client.
 - IPv4 multicast enabled on the Wi-Fi LAN. The default RTP/SAP address is `224.0.0.56`, with RTP port `5004`.
 - The receiver must expose an active PipeWire sink with the requested channel count. Standard HDMI profiles must report the expected speaker positions. For a Pro Audio sink with `AUX0…AUX7` positions, the matching HDMI card port must also report connected; a Pro Audio profile alone does not prove an HDMI device is present.
-- To connect the receiver to a Q900T, the HDMI source and Q900T must negotiate multichannel LPCM. This has not yet been verified on the available hardware. The Q900T Bluetooth A2DP path is stereo SBC and is rejected as a local mirror by the sender.
+- To connect the receiver to a Q900T, the HDMI source and Q900T must negotiate multichannel LPCM. This has not yet been verified on the available hardware. The host currently exposes the Q900T over two-channel A2DP with `SBC` and `SBC-XQ` profiles. Neither supports the required 5.1/7.1 path, so the bridge rejects this Bluetooth sink; direct HDMI LPCM to the Q900T remains unverified.
 
 ## Build and inspect
 
