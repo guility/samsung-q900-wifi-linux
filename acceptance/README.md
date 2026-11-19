@@ -1,6 +1,6 @@
 # Acceptance pipeline
 
-[`multichannel.feature`](multichannel.feature) records observable behavior in the Gherkin subset described by the Acceptance Pipeline Specification (APS). The executable Rust checks currently live in Cargo integration tests; this feature file is not yet wired to an APS generator/runtime.
+[`multichannel.feature`](multichannel.feature) records observable behavior in the Gherkin subset described by the Acceptance Pipeline Specification (APS). Cargo integration tests and an AgNesse Slim page execute the multichannel CLI acceptance checks. The Gherkin feature is not wired to an APS generator/runtime.
 
 ## Executable checks
 
@@ -19,11 +19,23 @@
 
 Run the Rust checks with `cargo test`; run the no-hardware RTP acceptance path with `bash acceptance/loopback.sh 5.1` and `bash acceptance/loopback.sh 7.1`. The script starts the real sender and receiver modules, sends distinct tones through RTP into a simulated AUX output, remaps them to HDMI channel order, and checks channel identity. Hardware acceptance still needs a receiver with HDMI LPCM to the Q900T, a channel-identification signal for 5.1 and 7.1, and measured alignment against the local output. Those checks remain open in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
+The AgNesse page starts the Rust Slim fixture and checks sender dry-run output for six-channel 5.1, eight-channel 7.1, 24-bit PCM, and CLI help. It does not start audio routing or send audio. Build the Rust binaries, then run it against an AgNesse standalone jar:
+
+```sh
+cargo build --bins
+Q900_BRIDGE_BIN="$PWD/target/debug/q900-bridge" \
+  java -jar "$AGNESSE_JAR" -d "$PWD" -r acceptance/agnesse -c 'Q900Bridge?test'
+```
+
+`AGNESSE_JAR` should name `agnesse-*-standalone.jar`. The page was executed with AgNesse's standalone runner and all four checks passed.
+
+SCRAP only analyzes Speclj specs, so `spec/` contains a small CLI smoke spec that calls the Rust binary through `--dry-run`; product source and runtime remain Rust. Run its assertions with `clojure -M:test`. To assess its structure with SCRAP, set `PROJECT_ROOT` to this repo and `SCRAP_ROOT` to an SCRAP checkout, then run `cd "$SCRAP_ROOT" && clojure -M:scrap "$PROJECT_ROOT/spec"`. Both commands require the Clojure CLI and Speclj dependencies.
+
 The loopback script accepts an optional second argument to exercise an explicit RTP source address, for example `bash acceptance/loopback.sh 5.1 192.168.1.57`. Replace that address with one assigned to the test host's Wi-Fi interface.
 
 ## Uncle Bob tools
 
-Mutator, Crapper, and Dryer have direct Rust support and were run against the current implementation. Their reports are generated under `.metrics/` and ignored by Git. A reproducible local setup needs Python 3.11+ and the three checkouts, with Crapper adjacent to Mutator.
+Mutator, Crapper, and Dryer have direct Rust support and were run against the current implementation; their reports are generated under `.metrics/` and ignored by Git. SCRAP was run against the Speclj CLI wrapper, and its report does not describe Rust source. A reproducible local setup needs Python 3.11+ and the Rust tool checkouts, with Crapper adjacent to Mutator.
 
 Generate Rust coverage where Crapper searches for LCOV before requesting its coverage report:
 
@@ -32,7 +44,7 @@ cargo llvm-cov --workspace --all-targets --lcov --output-path target/coverage/ru
 crapper --root . --changed --use-existing-coverage
 ```
 
-SCRAP analyzes Speclj/Clojure specs rather than Rust or Gherkin, so it does not assess the Cargo tests. APS's official Go parser and IR-DRY checker were run with Go 1.22 in a temporary container; the generated IR and advisory report are under ignored `target/acceptance/`. The report found 46 step occurrences, 45 unique steps, and 14 near-duplicate or possible-synonym candidates. They were reviewed and retained because they describe distinct layouts, routes, or assertions. APS still needs a Rust generator/runtime/step adapter and runner before it can execute or mutate these scenarios. AgNesse needs a separate Rust Slim fixture process. These adapters are not part of this transport prototype, and no APS/AgNesse execution or acceptance-mutation pass is claimed.
+SCRAP does not assess Rust source or the Cargo tests. APS's official Go parser and IR-DRY checker were run with Go 1.22 in a temporary container; the generated IR and advisory report are under ignored `target/acceptance/`. The report found 46 step occurrences, 45 unique steps, and 14 near-duplicate or possible-synonym candidates. They were reviewed and retained because they describe distinct layouts, routes, or assertions. APS still needs a Rust generator/runtime/step adapter and runner before it can execute or mutate these Gherkin scenarios. Mutator covers Rust source and tests; AgNesse executes the CLI smoke page. No APS Gherkin execution or acceptance-mutation pass is claimed.
 
 To rerun the APS syntax and wording checks, set `APS_ROOT` to a checkout of the official Acceptance Pipeline Specification repository:
 
