@@ -43,8 +43,64 @@ fn lpcm_channel_tones_are_separate_and_use_24_bit_native_endian_samples() {
                     assert_eq!(sample, 0, "tone {tone_index} leaked into channel {channel}");
                 }
             }
+
+            for tone_frame in [0, 1, 2399, 2400, 4800, 7199, 7200, 9599] {
+                let sample = decode_s24_native(
+                    &pcm,
+                    ((segment_start + tone_frame) * channels + tone_index) * 3,
+                );
+                assert_eq!(
+                    sample,
+                    expected_lpcm_sample(
+                        channel_tones(layout)[tone_index].frequency_hz,
+                        tone_frame
+                    ),
+                    "unexpected waveform at tone {tone_index}, frame {tone_frame}"
+                );
+            }
+
+            let gap_start = (segment_start + tone_frames) * channels * 3;
+            let gap_end = gap_start + gap_frames * channels * 3;
+            assert!(
+                pcm[gap_start..gap_end].iter().all(|sample| *sample == 0),
+                "gap after tone {tone_index} should be silent"
+            );
         }
     }
+}
+
+fn expected_lpcm_sample(frequency_hz: u32, frame: usize) -> i32 {
+    let frames = 200 * 48;
+    let fade_frames = 48_000_usize / 200;
+    let fade_in = (frame as f64 / fade_frames as f64).min(1.0);
+    let fade_out = ((frames - frame) as f64 / fade_frames as f64).min(1.0);
+    let phase = std::f64::consts::TAU * f64::from(frequency_hz) * frame as f64 / 48_000.0;
+    (phase.sin() * fade_in.min(fade_out) * 0.05 * 8_388_607.0) as i32
+}
+
+#[test]
+fn lpcm_channel_tone_writer_rejects_unsupported_durations() {
+    let mut output = Cursor::new(Vec::new());
+    assert_eq!(
+        write_channel_identification_tones(AudioLayout::Surround51, 199, 0, &mut output)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        write_channel_identification_tones(AudioLayout::Surround51, 200, 2001, &mut output)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
+#[test]
+fn lpcm_channel_tone_writer_accepts_maximum_silence_gap() {
+    let mut output = std::io::sink();
+    assert!(
+        write_channel_identification_tones(AudioLayout::Surround51, 200, 2000, &mut output).is_ok()
+    );
 }
 
 fn decode_s24_native(pcm: &[u8], offset: usize) -> i32 {

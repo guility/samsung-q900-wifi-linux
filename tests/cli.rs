@@ -135,6 +135,92 @@ fn lpcm_check_refuses_71_on_a_six_channel_sink() {
 }
 
 #[test]
+fn lpcm_check_plays_native_24_bit_pcm_and_restores_temporary_pipewire_nodes() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "lpcm-check",
+        "--sink",
+        "test_hdmi",
+        "--layout",
+        "5.1",
+        "--tone-ms",
+        "200",
+        "--gap-ms",
+        "0",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let playback_args = fs::read_to_string(&tools.pw_cat_log_file).unwrap();
+    assert!(playback_args.contains("--playback --raw --target q900_lpcm_test_"));
+    assert!(playback_args.contains("--rate 48000 --channels 6"));
+    assert!(playback_args.contains("--channel-map FL,FR,FC,LFE,RL,RR"));
+    assert!(playback_args.contains("--format s24 -"));
+
+    let pcm = fs::read(&tools.pw_cat_pcm_file).unwrap();
+    assert_eq!(pcm.len(), 6 * 200 * 48 * 6 * 3);
+    let pactl_log = fs::read_to_string(&tools.log_file).unwrap();
+    assert!(pactl_log.contains("load-module module-null-sink"));
+    assert!(pactl_log.contains("unload-module 100"));
+    assert!(!pactl_log.contains("set-default-sink"));
+    assert!(!tools.default_file.exists());
+    assert_eq!(
+        fs::read_to_string(tools.directory.join("input-sink")).unwrap(),
+        "original\n"
+    );
+    assert_loopback_process_stopped(&tools.loopback_pid_file);
+}
+
+#[test]
+fn lpcm_check_rejects_out_of_range_tone_and_gap_durations() {
+    let outputs = [
+        run_cli(&[
+            "lpcm-check",
+            "--sink",
+            "test_hdmi",
+            "--tone-ms",
+            "199",
+            "--dry-run",
+        ]),
+        run_cli(&[
+            "lpcm-check",
+            "--sink",
+            "test_hdmi",
+            "--tone-ms",
+            "3001",
+            "--dry-run",
+        ]),
+        run_cli(&[
+            "lpcm-check",
+            "--sink",
+            "test_hdmi",
+            "--gap-ms",
+            "2001",
+            "--dry-run",
+        ]),
+    ];
+    for output in &outputs {
+        assert!(!output.status.success());
+    }
+    assert!(
+        String::from_utf8_lossy(&outputs[0].stderr)
+            .contains("--tone-ms must be between 200 and 3000 ms")
+    );
+    assert!(
+        String::from_utf8_lossy(&outputs[1].stderr)
+            .contains("--tone-ms must be between 200 and 3000 ms")
+    );
+    assert!(
+        String::from_utf8_lossy(&outputs[2].stderr)
+            .contains("--gap-ms must be between 0 and 2000 ms")
+    );
+}
+
+#[test]
 fn fixed_delay_options_reject_values_above_two_seconds() {
     let outputs = [
         run_cli(&[
@@ -413,6 +499,8 @@ struct FakeAudioTools {
     log_file: PathBuf,
     loopback_log_file: PathBuf,
     loopback_pid_file: PathBuf,
+    pw_cat_log_file: PathBuf,
+    pw_cat_pcm_file: PathBuf,
     missing_move_once: bool,
 }
 
@@ -438,6 +526,8 @@ impl FakeAudioTools {
         let log_file = directory.join("pactl.log");
         let loopback_log_file = directory.join("pw-loopback.log");
         let loopback_pid_file = directory.join("pw-loopback.pid");
+        let pw_cat_log_file = directory.join("pw-cat.log");
+        let pw_cat_pcm_file = directory.join("pw-cat.pcm");
         fs::write(directory.join("input-sink"), "original\n").unwrap();
         write_executable(
             &bin.join("pactl"),
@@ -496,6 +586,13 @@ printf '%s\n' "$$" > "$Q900_FAKE_PW_LOOPBACK_PID"
 exec /usr/bin/sleep 60
 "##,
         );
+        write_executable(
+            &bin.join("pw-cat"),
+            r##"#!/bin/sh
+printf '%s\n' "$*" >> "$Q900_FAKE_PW_CAT_LOG"
+cat > "$Q900_FAKE_PW_CAT_PCM"
+"##,
+        );
 
         Self {
             directory,
@@ -503,6 +600,8 @@ exec /usr/bin/sleep 60
             log_file,
             loopback_log_file,
             loopback_pid_file,
+            pw_cat_log_file,
+            pw_cat_pcm_file,
             missing_move_once,
         }
     }
@@ -517,6 +616,8 @@ exec /usr/bin/sleep 60
             .env("Q900_FAKE_PACTL_LOG", &self.log_file)
             .env("Q900_FAKE_PW_LOOPBACK_LOG", &self.loopback_log_file)
             .env("Q900_FAKE_PW_LOOPBACK_PID", &self.loopback_pid_file)
+            .env("Q900_FAKE_PW_CAT_LOG", &self.pw_cat_log_file)
+            .env("Q900_FAKE_PW_CAT_PCM", &self.pw_cat_pcm_file)
             .env("Q900_FAKE_INPUT_SINK", self.directory.join("input-sink"))
             .env("Q900_FAKE_BUS", self.directory.join("bus-sink"))
             .env(
@@ -541,6 +642,8 @@ exec /usr/bin/sleep 60
             .env("Q900_FAKE_PACTL_LOG", &self.log_file)
             .env("Q900_FAKE_PW_LOOPBACK_LOG", &self.loopback_log_file)
             .env("Q900_FAKE_PW_LOOPBACK_PID", &self.loopback_pid_file)
+            .env("Q900_FAKE_PW_CAT_LOG", &self.pw_cat_log_file)
+            .env("Q900_FAKE_PW_CAT_PCM", &self.pw_cat_pcm_file)
             .env("Q900_FAKE_INPUT_SINK", self.directory.join("input-sink"))
             .env("Q900_FAKE_BUS", self.directory.join("bus-sink"))
             .env(

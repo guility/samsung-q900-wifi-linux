@@ -94,19 +94,12 @@ fn write_tone<W: Write>(
     output: &mut W,
 ) -> io::Result<()> {
     let frames = (48_000_u64 * u64::from(duration_ms) / 1_000) as usize;
-    let fade_frames = (48_000_usize / 200).min(frames / 2);
+    // The public writer enforces a 200 ms minimum, so a 5 ms fade always fits.
+    let fade_frames = 48_000_usize / 200;
     let mut pcm = Vec::with_capacity(frames * channels * 3);
     for frame in 0..frames {
-        let fade_in = if fade_frames == 0 {
-            1.0
-        } else {
-            (frame as f64 / fade_frames as f64).min(1.0)
-        };
-        let fade_out = if fade_frames == 0 {
-            1.0
-        } else {
-            ((frames - frame) as f64 / fade_frames as f64).min(1.0)
-        };
+        let fade_in = (frame as f64 / fade_frames as f64).min(1.0);
+        let fade_out = ((frames - frame) as f64 / fade_frames as f64).min(1.0);
         let envelope = fade_in.min(fade_out);
         let phase = std::f64::consts::TAU * f64::from(frequency_hz) * frame as f64 / 48_000.0;
         let sample = (phase.sin() * envelope * 0.05 * 8_388_607.0) as i32;
