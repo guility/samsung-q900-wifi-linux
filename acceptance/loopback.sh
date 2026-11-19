@@ -2,6 +2,7 @@
 set -euo pipefail
 
 layout="${1:-5.1}"
+source_ip="${2:-}"
 case "$layout" in
   5.1)
     channels=6
@@ -20,10 +21,14 @@ case "$layout" in
     sink_port="playback_AUX0"
     ;;
   *)
-    echo "usage: $0 [5.1|7.1]" >&2
+    echo "usage: $0 [5.1|7.1] [SOURCE_IP]" >&2
     exit 2
     ;;
 esac
+if [[ "$#" -gt 2 ]]; then
+  echo "usage: $0 [5.1|7.1] [SOURCE_IP]" >&2
+  exit 2
+fi
 
 for tool in cargo pactl pw-cat pw-link python3; do
   command -v "$tool" >/dev/null || { echo "missing required command: $tool" >&2; exit 1; }
@@ -79,9 +84,12 @@ local_module="$(pactl load-module module-null-sink \
   --sink "$rx_sink" --layout "$layout" --latency-ms 100 \
   >"$work_dir/receiver.log" 2>&1 &
 receiver_pid=$!
-"$repo_root/target/debug/q900-bridge" sender \
-  --layout "$layout" --destination-ip 224.0.0.56 \
-  --local-sink "$local_sink" --latency-ms 100 \
+sender_args=(sender --layout "$layout" --destination-ip 224.0.0.56 \
+  --local-sink "$local_sink" --latency-ms 100)
+if [[ -n "$source_ip" ]]; then
+  sender_args+=(--source-ip "$source_ip")
+fi
+"$repo_root/target/debug/q900-bridge" "${sender_args[@]}" \
   >"$work_dir/sender.log" 2>&1 &
 sender_pid=$!
 bus_sink="q900_bridge_${sender_pid}"

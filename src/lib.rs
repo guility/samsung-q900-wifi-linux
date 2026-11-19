@@ -95,6 +95,7 @@ pub struct ModuleSpec {
 pub struct SenderConfig {
     pub layout: AudioLayout,
     pub destination: Ipv4Addr,
+    pub source_ip: Option<Ipv4Addr>,
     pub port: u16,
     pub rate: u32,
     pub local_sink: String,
@@ -159,19 +160,23 @@ pub fn sender_plan(bus_sink: &str, config: &SenderConfig) -> SenderPlan {
             "sink_properties=device.description=Q900_Bridge_Multichannel".to_owned(),
         ],
     };
+    let mut rtp_sender_args = vec![
+        format!("source={bus_sink}.monitor"),
+        "format=s24be".to_owned(),
+        format!("channels={channels}"),
+        format!("rate={}", config.rate),
+        format!("destination_ip={}", config.destination),
+        format!("port={}", config.port),
+        "mtu=1200".to_owned(),
+        "loop=1".to_owned(),
+        "stream_name=Q900_Bridge".to_owned(),
+    ];
+    if let Some(source_ip) = config.source_ip {
+        rtp_sender_args.push(format!("source_ip={source_ip}"));
+    }
     let rtp_sender = ModuleSpec {
         name: "module-rtp-send".to_owned(),
-        args: vec![
-            format!("source={bus_sink}.monitor"),
-            "format=s24be".to_owned(),
-            format!("channels={channels}"),
-            format!("rate={}", config.rate),
-            format!("destination_ip={}", config.destination),
-            format!("port={}", config.port),
-            "mtu=1200".to_owned(),
-            "loop=1".to_owned(),
-            "stream_name=Q900_Bridge".to_owned(),
-        ],
+        args: rtp_sender_args,
     };
     SenderPlan {
         bus_sink: bus_sink.to_owned(),

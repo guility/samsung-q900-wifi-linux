@@ -19,6 +19,8 @@
 
 Run the Rust checks with `cargo test`; run the no-hardware RTP acceptance path with `bash acceptance/loopback.sh 5.1` and `bash acceptance/loopback.sh 7.1`. The script starts the real sender and receiver modules, sends distinct tones through RTP into a simulated AUX output, remaps them to HDMI channel order, and checks channel identity. Hardware acceptance still needs a receiver with HDMI LPCM to the Q900T, a channel-identification signal for 5.1 and 7.1, and measured alignment against the local output. Those checks remain open in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
+The loopback script accepts an optional second argument to exercise an explicit RTP source address, for example `bash acceptance/loopback.sh 5.1 192.168.1.57`. Replace that address with one assigned to the test host's Wi-Fi interface.
+
 ## Uncle Bob tools
 
 Mutator, Crapper, and Dryer have direct Rust support and were run against the current implementation. Their reports are generated under `.metrics/` and ignored by Git. A reproducible local setup needs Python 3.11+ and the three checkouts, with Crapper adjacent to Mutator.

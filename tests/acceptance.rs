@@ -125,6 +125,7 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
     let config = SenderConfig {
         layout: AudioLayout::Surround71,
         destination: Ipv4Addr::new(239, 10, 20, 30),
+        source_ip: Some(Ipv4Addr::new(192, 168, 1, 57)),
         port: 5004,
         rate: 48_000,
         local_sink: "alsa_output.test".to_owned(),
@@ -149,6 +150,12 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
             .args
             .iter()
             .any(|arg| arg == "destination_ip=239.10.20.30")
+    );
+    assert!(
+        plan.modules[1]
+            .args
+            .iter()
+            .any(|arg| arg == "source_ip=192.168.1.57")
     );
     assert!(plan.modules[1].args.iter().any(|arg| arg == "loop=1"));
     assert_eq!(plan.local_mirror.capture, "q900_bridge_test");

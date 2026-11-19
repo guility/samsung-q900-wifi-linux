@@ -113,6 +113,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
         &[
             "--layout",
             "--destination-ip",
+            "--source-ip",
             "--port",
             "--local-sink",
             "--latency-ms",
@@ -122,6 +123,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
     )?;
     let layout = parse_layout(options.value("--layout"))?;
     let destination = parse_destination(options.value("--destination-ip"))?;
+    let source_ip = parse_source_ip(options.value("--source-ip"))?;
     let port = parse_port(options.value("--port"))?;
     let local_sink = parse_local_sink(options.value("--local-sink"))?;
     let latency_ms = parse_latency_option(options.value("--latency-ms"))?;
@@ -131,6 +133,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
         config: SenderConfig {
             layout,
             destination,
+            source_ip,
             port,
             rate: 48_000,
             local_sink,
@@ -269,6 +272,20 @@ fn parse_destination(value: Option<&str>) -> Result<Ipv4Addr, String> {
             Ipv4Addr::from_str(value).map_err(|_| format!("invalid IPv4 address {value:?}"))
         })
         .unwrap_or(Ok(DEFAULT_DESTINATION))
+}
+
+fn parse_source_ip(value: Option<&str>) -> Result<Option<Ipv4Addr>, String> {
+    value
+        .map(|value| {
+            let address = Ipv4Addr::from_str(value)
+                .map_err(|_| format!("invalid source IPv4 address {value:?}"))?;
+            if address.is_unspecified() || address.is_multicast() || address == Ipv4Addr::BROADCAST
+            {
+                return Err("source IPv4 address must be a unicast address".to_owned());
+            }
+            Ok(address)
+        })
+        .transpose()
 }
 
 fn parse_port(value: Option<&str>) -> Result<u16, String> {
@@ -633,6 +650,9 @@ fn print_sender_plan(plan: &q900_bridge::SenderPlan, config: &SenderConfig) {
         "Sender plan: {}-channel s24be/{} Hz RTP to {}:{}",
         config.layout, config.rate, config.destination, config.port
     );
+    if let Some(source_ip) = config.source_ip {
+        println!("RTP source address: {source_ip}");
+    }
     println!("System sink: {}", plan.bus_sink);
     for module in &plan.modules {
         println!("  {} {}", module.name, module.args.join(" "));
@@ -846,6 +866,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout 5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Use lpcm-check to play one channel at a time through an active HDMI sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
+        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout 5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through an active HDMI sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
     );
 }

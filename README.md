@@ -8,6 +8,7 @@ The destination and open product decisions are tracked in the [Wayfinder map](ht
 
 - Linux with PipeWire, its PulseAudio compatibility server (`pactl`), and the `pw-loopback` client.
 - IPv4 multicast enabled on the Wi-Fi LAN. The default RTP/SAP address is `224.0.0.56`, with RTP port `5004`.
+- On hosts with multiple network interfaces, pass `--source-ip` with the IPv4 address assigned to Wi-Fi (for example, find it with `ip -4 addr show dev wlan0`). If omitted, the system routing table chooses the outbound interface. PipeWire's RTP sender supports this source address setting ([module-rtp-send](https://pipewire.pages.freedesktop.org/pipewire/page_pulse_module_rtp_send.html)).
 - The receiver must expose an active PipeWire sink with the requested channel count. Standard HDMI profiles must report the expected speaker positions. For a Pro Audio sink with `AUX0…AUX7` positions, the matching HDMI card port must also report connected; a Pro Audio profile alone does not prove an HDMI device is present.
 - To connect the receiver to a Q900T, the HDMI source and Q900T must negotiate multichannel LPCM. This has not yet been verified on the available hardware. The host currently exposes the Q900T over two-channel A2DP with `SBC` and `SBC-XQ` profiles. Neither supports the required 5.1/7.1 path, so the bridge rejects this Bluetooth sink; direct HDMI LPCM to the Q900T remains unverified.
 
@@ -25,9 +26,12 @@ Preview a sender setup without changing audio routing or sending network traffic
 cargo run -- sender \
   --layout 7.1 \
   --destination-ip 224.0.0.56 \
+  --source-ip 192.168.1.57 \
   --local-sink alsa_output.YOUR_CARD.HiFi__Speaker__sink \
   --dry-run
 ```
+
+Replace `192.168.1.57` with the IPv4 address assigned to the Wi-Fi interface. `--source-ip` binds the RTP sender to that local address; without it, the operating system selects the route.
 
 Run an end-to-end software loopback through PipeWire's RTP modules without a soundbar:
 
@@ -58,6 +62,7 @@ Start the sender on the source host:
 cargo run --release -- sender \
   --layout 5.1 \
   --destination-ip 224.0.0.56 \
+  --source-ip 192.168.1.57 \
   --local-sink alsa_output.YOUR_CARD.HiFi__Speaker__sink
 ```
 

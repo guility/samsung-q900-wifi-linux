@@ -18,7 +18,9 @@ fn help_is_available_without_arguments_or_with_either_help_flag() {
     for args in [&[][..], &["--help"][..], &["-h"][..]] {
         let output = run_cli(args);
         assert!(output.status.success());
-        assert!(String::from_utf8(output.stdout).unwrap().contains("Usage:"));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("Usage:"));
+        assert!(stdout.contains("--source-ip IPv4"));
     }
 }
 
@@ -44,6 +46,46 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
     assert!(stdout.contains("--delay 0.037"));
     assert!(stdout.contains("--capture-props {\"stream.capture.sink\":true}"));
     assert!(stdout.contains("--channel-map [ FL FR FC LFE SL SR RL RR ]"));
+    assert!(!stdout.contains("source_ip="));
+}
+
+#[test]
+fn sender_dry_run_binds_rtp_to_an_explicit_wifi_source_ip() {
+    let output = run_cli(&[
+        "sender",
+        "--layout",
+        "5.1",
+        "--source-ip",
+        "192.168.1.57",
+        "--local-sink",
+        "alsa_output.test",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("source_ip=192.168.1.57"));
+}
+
+#[test]
+fn sender_rejects_an_invalid_source_ip() {
+    for (address, error) in [
+        ("not-an-ip", "invalid source IPv4 address"),
+        ("0.0.0.0", "source IPv4 address must be a unicast address"),
+        ("224.0.0.1", "source IPv4 address must be a unicast address"),
+    ] {
+        let output = run_cli(&[
+            "sender",
+            "--source-ip",
+            address,
+            "--local-sink",
+            "alsa_output.test",
+            "--dry-run",
+        ]);
+
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(error));
+    }
 }
 
 #[test]
