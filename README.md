@@ -2,6 +2,8 @@
 
 An experimental Rust bridge that routes Linux system audio to a PipeWire virtual sink, mirrors it to a local output, and sends uncompressed multichannel PCM over RTP/Wi-Fi. The sender supports 5.1 (6 channels) and 7.1 (8 channels), using 24-bit/48 kHz PCM. This avoids Bluetooth audio codecs such as SBC on the bridge path.
 
+The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 6.912 Mbit/s for 5.1 and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The current same-host loopback confirms channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
+
 The destination and open product decisions are tracked in the [Wayfinder map](https://github.com/guility/samsung-q900-wifi-linux/issues/1). Implementation work is tracked in [issue #10](https://github.com/guility/samsung-q900-wifi-linux/issues/10); direct Q900T HDMI LPCM acceptance is pending in [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12).
 
 ## Requirements
