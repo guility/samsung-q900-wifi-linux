@@ -14,6 +14,15 @@ fn run_cli(args: &[&str]) -> Output {
 }
 
 #[test]
+fn help_is_available_without_arguments_or_with_either_help_flag() {
+    for args in [&[][..], &["--help"][..], &["-h"][..]] {
+        let output = run_cli(args);
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout).unwrap().contains("Usage:"));
+    }
+}
+
+#[test]
 fn sender_dry_run_shows_eight_channel_pcm_plan() {
     let output = run_cli(&[
         "sender",
@@ -21,6 +30,8 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
         "7.1",
         "--local-sink",
         "alsa_output.test",
+        "--local-delay-ms",
+        "37",
         "--dry-run",
     ]);
 
@@ -29,6 +40,85 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
     assert!(stdout.contains("7.1-channel s24be/48000 Hz RTP"));
     assert!(stdout.contains("channels=8"));
     assert!(stdout.contains("side-left,side-right,rear-left,rear-right"));
+    assert!(stdout.contains("pw-loopback"));
+    assert!(stdout.contains("--delay 0.037"));
+    assert!(stdout.contains("--capture-props {\"stream.capture.sink\":true}"));
+    assert!(stdout.contains("--channel-map [ FL FR FC LFE SL SR RL RR ]"));
+}
+
+#[test]
+fn sender_delay_defaults_to_zero_and_accepts_the_two_second_limit() {
+    let default = run_cli(&["sender", "--local-sink", "alsa_output.test", "--dry-run"]);
+    assert!(default.status.success());
+    assert!(
+        String::from_utf8(default.stdout)
+            .unwrap()
+            .contains("--delay 0.000")
+    );
+
+    let upper_bound = run_cli(&[
+        "sender",
+        "--local-sink",
+        "alsa_output.test",
+        "--local-delay-ms",
+        "2000",
+        "--dry-run",
+    ]);
+    assert!(upper_bound.status.success());
+    assert!(
+        String::from_utf8(upper_bound.stdout)
+            .unwrap()
+            .contains("--delay 2.000")
+    );
+}
+
+#[test]
+fn receiver_dry_run_applies_fixed_output_delay() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "receiver",
+        "--sink",
+        "test_hdmi",
+        "--layout",
+        "5.1",
+        "--output-delay-ms",
+        "125",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("pw-loopback"));
+    assert!(stdout.contains("--delay 0.125"));
+    assert!(stdout.contains("--playback test_hdmi"));
+    assert!(stdout.contains("--capture-props {\"stream.capture.sink\":true}"));
+}
+
+#[test]
+fn fixed_delay_options_reject_values_above_two_seconds() {
+    let outputs = [
+        run_cli(&[
+            "sender",
+            "--local-sink",
+            "alsa_output.test",
+            "--local-delay-ms",
+            "2001",
+            "--dry-run",
+        ]),
+        run_cli(&[
+            "receiver",
+            "--sink",
+            "test_sink",
+            "--output-delay-ms",
+            "2001",
+            "--dry-run",
+        ]),
+    ];
+    for output in outputs {
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("delay must be between 0 and 2000 ms"));
+    }
 }
 
 #[test]
@@ -133,6 +223,34 @@ fn sync_report_reads_acoustic_observations_from_csv() {
 }
 
 #[test]
+fn sync_report_zero_offset_recommends_no_fixed_delay() {
+    let path = env::temp_dir().join(format!(
+        "q900-sync-aligned-{}-{}.csv",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        "elapsed_s,local_ms,q900_ms\n0,0,0\n60,0,0\n120,0,0\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_q900-bridge"))
+        .args(["sync-report", "--input"])
+        .arg(&path)
+        .output()
+        .expect("q900-bridge should start");
+    let _ = fs::remove_file(path);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("outputs align at start"));
+    assert!(stdout.contains("Recommended compensation: no fixed delay"));
+}
+
+#[test]
 fn sender_restores_default_and_unloads_modules_after_sigint() {
     let tools = FakeAudioTools::new();
     let mut child = tools.launch(&[
@@ -145,6 +263,8 @@ fn sender_restores_default_and_unloads_modules_after_sigint() {
         "test_local_sink",
     ]);
     let bus = wait_for_prefix(&tools.default_file, "q900_bridge_");
+    wait_for_prefix(&tools.loopback_pid_file, "");
+    wait_for_log(&tools.log_file, &format!("move-sink-input 10 {bus}"));
     thread::sleep(Duration::from_millis(150));
     stop_with_sigint(&mut child);
 
@@ -155,7 +275,31 @@ fn sender_restores_default_and_unloads_modules_after_sigint() {
     let log = fs::read_to_string(&tools.log_file).unwrap();
     assert!(log.contains(&format!("set-default-sink {bus}")));
     assert!(log.contains("set-default-sink original"));
-    assert_eq!(log.matches("unload-module 100").count(), 3);
+    assert!(log.contains("move-sink-input 10 original"));
+    assert_eq!(log.matches("unload-module 100").count(), 2);
+    assert_loopback_process_stopped(&tools.loopback_pid_file);
+}
+
+#[test]
+fn sender_ignores_a_stream_that_disappears_during_routing() {
+    let tools = FakeAudioTools::new_with_missing_move_once();
+    let mut child = tools.launch(&[
+        "sender",
+        "--layout",
+        "5.1",
+        "--destination-ip",
+        "127.0.0.1",
+        "--local-sink",
+        "test_local_sink",
+    ]);
+    wait_for_log(&tools.log_file, "move-sink-input 10 q900_bridge_");
+    thread::sleep(Duration::from_millis(150));
+    stop_with_sigint(&mut child);
+
+    let log = fs::read_to_string(&tools.log_file).unwrap();
+    assert!(log.contains("set-default-sink original"));
+    assert_eq!(log.matches("unload-module 100").count(), 2);
+    assert_loopback_process_stopped(&tools.loopback_pid_file);
 }
 
 #[test]
@@ -163,12 +307,29 @@ fn receiver_loads_rtp_module_and_unloads_it_after_sigint() {
     let tools = FakeAudioTools::new();
     let mut child = tools.launch(&["receiver", "--sink", "test_hdmi", "--layout", "5.1"]);
     wait_for_log(&tools.log_file, "load-module module-rtp-recv");
+    wait_for_prefix(&tools.loopback_pid_file, "");
     thread::sleep(Duration::from_millis(150));
     stop_with_sigint(&mut child);
 
     let log = fs::read_to_string(&tools.log_file).unwrap();
-    assert!(log.contains("sink=test_hdmi"));
+    assert_eq!(log.matches("unload-module 100").count(), 2);
     assert!(log.contains("unload-module 100"));
+    assert_loopback_process_stopped(&tools.loopback_pid_file);
+}
+
+fn assert_loopback_process_stopped(path: &std::path::Path) {
+    let pid = fs::read_to_string(path).unwrap();
+    let status = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("kill command should be available");
+    assert!(
+        !status.success(),
+        "pw-loopback process {} is still running",
+        pid.trim()
+    );
 }
 
 fn stop_with_sigint(child: &mut std::process::Child) {
@@ -210,10 +371,21 @@ struct FakeAudioTools {
     directory: PathBuf,
     default_file: PathBuf,
     log_file: PathBuf,
+    loopback_log_file: PathBuf,
+    loopback_pid_file: PathBuf,
+    missing_move_once: bool,
 }
 
 impl FakeAudioTools {
     fn new() -> Self {
+        Self::create(false)
+    }
+
+    fn new_with_missing_move_once() -> Self {
+        Self::create(true)
+    }
+
+    fn create(missing_move_once: bool) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -224,6 +396,9 @@ impl FakeAudioTools {
         fs::create_dir_all(&bin).unwrap();
         let default_file = directory.join("default-sink");
         let log_file = directory.join("pactl.log");
+        let loopback_log_file = directory.join("pw-loopback.log");
+        let loopback_pid_file = directory.join("pw-loopback.pid");
+        fs::write(directory.join("input-sink"), "original\n").unwrap();
         write_executable(
             &bin.join("pactl"),
             r##"#!/bin/sh
@@ -233,11 +408,34 @@ case "$1" in
     if [ -f "$Q900_FAKE_DEFAULT" ]; then cat "$Q900_FAKE_DEFAULT"; else printf 'original\n'; fi
     ;;
   list)
-    if [ "$2" = "short" ] && [ "$3" = "sinks" ]; then printf '1 original\n'; fi
+    if [ "$2" = "short" ] && [ "$3" = "sinks" ]; then
+      printf '1 original\n'
+      if [ -f "$Q900_FAKE_BUS" ]; then printf '100 '; cat "$Q900_FAKE_BUS"; fi
+    fi
+    if [ "$2" = "short" ] && [ "$3" = "sink-inputs" ]; then
+      if [ -f "$Q900_FAKE_INPUT_SINK" ]; then
+        input_sink=$(cat "$Q900_FAKE_INPUT_SINK")
+        if [ "$input_sink" = "original" ]; then printf '10 1\n'; fi
+        if [ "$input_sink" != "original" ] && [ -n "$input_sink" ]; then printf '10 100\n'; fi
+      fi
+    fi
     ;;
   load-module) printf '100\n' ;;
-  set-default-sink) printf '%s\n' "$2" > "$Q900_FAKE_DEFAULT" ;;
-  unload-module|move-sink-input) : ;;
+  set-default-sink)
+    printf '%s\n' "$2" > "$Q900_FAKE_DEFAULT"
+    if [ "$2" != "original" ]; then printf '%s\n' "$2" > "$Q900_FAKE_BUS"; fi
+    ;;
+  move-sink-input)
+    if [ "$Q900_FAKE_MISSING_MOVE_ONCE" = "1" ] && [ ! -f "$Q900_FAKE_MISSING_MOVE_MARKER" ]; then
+      : > "$Q900_FAKE_MISSING_MOVE_MARKER"
+      : > "$Q900_FAKE_INPUT_SINK"
+      printf 'No such entity\n' >&2
+      exit 1
+    fi
+    printf '%s\n' "$3" > "$Q900_FAKE_INPUT_SINK"
+    if [ "$3" != "original" ]; then printf '%s\n' "$3" > "$Q900_FAKE_BUS"; fi
+    ;;
+  unload-module) : ;;
   *) exit 2 ;;
 esac
 "##,
@@ -250,12 +448,47 @@ cat <<'JSON'
 JSON
 "##,
         );
+        write_executable(
+            &bin.join("pw-loopback"),
+            r##"#!/bin/sh
+printf '%s\n' "$*" >> "$Q900_FAKE_PW_LOOPBACK_LOG"
+printf '%s\n' "$$" > "$Q900_FAKE_PW_LOOPBACK_PID"
+exec /usr/bin/sleep 60
+"##,
+        );
 
         Self {
             directory,
             default_file,
             log_file,
+            loopback_log_file,
+            loopback_pid_file,
+            missing_move_once,
         }
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        let bin = self.directory.join("bin");
+        let path = format!("{}:{}", bin.display(), env::var("PATH").unwrap_or_default());
+        Command::new(env!("CARGO_BIN_EXE_q900-bridge"))
+            .args(args)
+            .env("PATH", path)
+            .env("Q900_FAKE_DEFAULT", &self.default_file)
+            .env("Q900_FAKE_PACTL_LOG", &self.log_file)
+            .env("Q900_FAKE_PW_LOOPBACK_LOG", &self.loopback_log_file)
+            .env("Q900_FAKE_PW_LOOPBACK_PID", &self.loopback_pid_file)
+            .env("Q900_FAKE_INPUT_SINK", self.directory.join("input-sink"))
+            .env("Q900_FAKE_BUS", self.directory.join("bus-sink"))
+            .env(
+                "Q900_FAKE_MISSING_MOVE_MARKER",
+                self.directory.join("missing-move-seen"),
+            )
+            .env(
+                "Q900_FAKE_MISSING_MOVE_ONCE",
+                if self.missing_move_once { "1" } else { "0" },
+            )
+            .output()
+            .expect("q900-bridge process should start")
     }
 
     fn launch(&self, args: &[&str]) -> std::process::Child {
@@ -266,6 +499,18 @@ JSON
             .env("PATH", path)
             .env("Q900_FAKE_DEFAULT", &self.default_file)
             .env("Q900_FAKE_PACTL_LOG", &self.log_file)
+            .env("Q900_FAKE_PW_LOOPBACK_LOG", &self.loopback_log_file)
+            .env("Q900_FAKE_PW_LOOPBACK_PID", &self.loopback_pid_file)
+            .env("Q900_FAKE_INPUT_SINK", self.directory.join("input-sink"))
+            .env("Q900_FAKE_BUS", self.directory.join("bus-sink"))
+            .env(
+                "Q900_FAKE_MISSING_MOVE_MARKER",
+                self.directory.join("missing-move-seen"),
+            )
+            .env(
+                "Q900_FAKE_MISSING_MOVE_ONCE",
+                if self.missing_move_once { "1" } else { "0" },
+            )
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

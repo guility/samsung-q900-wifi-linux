@@ -23,10 +23,11 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
         rate: 48_000,
         local_sink: "alsa_output.test".to_owned(),
         latency_ms: 80,
+        local_delay_ms: 37,
     };
 
     let plan = sender_plan("q900_bridge_test", &config);
-    assert_eq!(plan.modules.len(), 3);
+    assert_eq!(plan.modules.len(), 2);
     assert_eq!(plan.modules[0].name, "module-null-sink");
     assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=8"));
     assert!(
@@ -44,12 +45,15 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
             .any(|arg| arg == "destination_ip=239.10.20.30")
     );
     assert!(plan.modules[1].args.iter().any(|arg| arg == "loop=1"));
-    assert!(
-        plan.modules[2]
-            .args
-            .iter()
-            .any(|arg| arg == "sink=alsa_output.test")
+    assert_eq!(plan.local_mirror.capture, "q900_bridge_test");
+    assert_eq!(plan.local_mirror.playback, "alsa_output.test");
+    assert_eq!(plan.local_mirror.channels, 8);
+    assert_eq!(
+        plan.local_mirror.channel_map,
+        "[ FL FR FC LFE SL SR RL RR ]"
     );
+    assert_eq!(plan.local_mirror.latency_ms, 80);
+    assert_eq!(plan.local_mirror.delay_ms, 37);
 }
 
 #[test]
@@ -58,6 +62,7 @@ fn receiver_plan_selects_pcm_format_layout_and_latency() {
         layout: AudioLayout::Surround71,
         sink: "alsa_output.hdmi".to_owned(),
         latency_ms: 60,
+        output_delay_ms: 125,
     };
     let output = SinkCapabilities {
         name: config.sink.clone(),
@@ -70,7 +75,7 @@ fn receiver_plan_selects_pcm_format_layout_and_latency() {
     };
 
     let plan = receiver_plan(&config, "q900_rtp_rx_test", &output);
-    assert_eq!(plan.modules.len(), 3);
+    assert_eq!(plan.modules.len(), 2);
     assert_eq!(plan.modules[0].name, "module-null-sink");
     assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=8"));
     assert_eq!(plan.modules[1].name, "module-rtp-recv");
@@ -86,27 +91,15 @@ fn receiver_plan_selects_pcm_format_layout_and_latency() {
             .iter()
             .any(|arg| arg == "latency_msec=60")
     );
-    assert_eq!(plan.modules[2].name, "module-loopback");
-    assert!(
-        plan.modules[2]
-            .args
-            .iter()
-            .any(|arg| arg == "source=q900_rtp_rx_test.monitor")
+    assert_eq!(plan.output_loopback.capture, "q900_rtp_rx_test");
+    assert_eq!(plan.output_loopback.playback, "alsa_output.hdmi");
+    assert_eq!(plan.output_loopback.channels, 8);
+    assert_eq!(
+        plan.output_loopback.channel_map,
+        "[ FL FR FC LFE SL SR RL RR ]"
     );
-    assert!(
-        plan.modules[2]
-            .args
-            .iter()
-            .any(|arg| arg == "sink=alsa_output.hdmi")
-    );
-    assert!(plan.modules[2].args.iter().any(|arg| arg == "channels=8"));
-    assert!(
-        plan.modules[2]
-            .args
-            .iter()
-            .any(|arg| arg == "channel_map=front-left,front-right,front-center,lfe,side-left,side-right,rear-left,rear-right")
-    );
-    assert!(plan.modules[2].args.iter().any(|arg| arg == "remix=1"));
+    assert_eq!(plan.output_loopback.latency_ms, 60);
+    assert_eq!(plan.output_loopback.delay_ms, 125);
 }
 
 #[test]
@@ -115,6 +108,7 @@ fn receiver_remaps_pro_audio_aux_sink_and_requires_a_connected_hdmi_route() {
         layout: AudioLayout::Surround71,
         sink: "alsa_output.pci-0000_01_00.1.pro-output-3".to_owned(),
         latency_ms: 60,
+        output_delay_ms: 0,
     };
     let output = SinkCapabilities {
         name: config.sink.clone(),
@@ -145,7 +139,7 @@ fn receiver_remaps_pro_audio_aux_sink_and_requires_a_connected_hdmi_route() {
 
     let plan = receiver_plan(&config, "q900_rtp_rx_test", &output);
     assert_eq!(plan.output_sink, "q900_rtp_rx_test_output");
-    assert_eq!(plan.modules.len(), 4);
+    assert_eq!(plan.modules.len(), 3);
     assert_eq!(plan.modules[0].name, "module-null-sink");
     assert_eq!(plan.modules[1].name, "module-remap-sink");
     assert!(
@@ -161,12 +155,10 @@ fn receiver_remaps_pro_audio_aux_sink_and_requires_a_connected_hdmi_route() {
             .any(|arg| arg == "channel_map=front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right")
     );
     assert_eq!(plan.modules[2].name, "module-rtp-recv");
-    assert_eq!(plan.modules[3].name, "module-loopback");
-    assert!(
-        plan.modules[3]
-            .args
-            .iter()
-            .any(|arg| arg == "sink=q900_rtp_rx_test_output")
+    assert_eq!(plan.output_loopback.playback, "q900_rtp_rx_test_output");
+    assert_eq!(
+        plan.output_loopback.channel_map,
+        "[ FL FR FC LFE SL SR RL RR ]"
     );
 }
 

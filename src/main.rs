@@ -1,13 +1,13 @@
 use q900_bridge::sync::{OutputPath, analyze_sync, parse_sync_csv};
 use q900_bridge::{
-    AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
+    AudioLayout, LoopbackSpec, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
     has_auxiliary_channel_map, parse_pipewire_sinks, receiver_plan, sender_plan,
     validate_aux_hdmi_route, validate_receiver_sink,
 };
 use std::collections::HashMap;
 use std::env;
 use std::net::Ipv4Addr;
-use std::process::{Command, ExitCode};
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,6 +105,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
             "--port",
             "--local-sink",
             "--latency-ms",
+            "--local-delay-ms",
         ],
         &["--dry-run"],
     )?;
@@ -113,6 +114,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
     let port = parse_port(options.value("--port"))?;
     let local_sink = parse_local_sink(options.value("--local-sink"))?;
     let latency_ms = parse_latency_option(options.value("--latency-ms"))?;
+    let local_delay_ms = parse_delay_option(options.value("--local-delay-ms"))?;
 
     Ok(SenderArgs {
         config: SenderConfig {
@@ -122,6 +124,7 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
             rate: 48_000,
             local_sink,
             latency_ms,
+            local_delay_ms,
         },
         dry_run: options.enabled("--dry-run"),
     })
@@ -139,7 +142,7 @@ fn parse_local_sink(value: Option<&str>) -> Result<String, String> {
 fn parse_receiver_args(args: &[String]) -> Result<ReceiverArgs, String> {
     let options = parse_options(
         args,
-        &["--layout", "--sink", "--latency-ms"],
+        &["--layout", "--sink", "--latency-ms", "--output-delay-ms"],
         &["--dry-run"],
     )?;
     let layout = parse_layout(options.value("--layout"))?;
@@ -149,12 +152,14 @@ fn parse_receiver_args(args: &[String]) -> Result<ReceiverArgs, String> {
         .to_owned();
     validate_sink_token(&sink)?;
     let latency_ms = parse_latency_option(options.value("--latency-ms"))?;
+    let output_delay_ms = parse_delay_option(options.value("--output-delay-ms"))?;
 
     Ok(ReceiverArgs {
         config: ReceiverConfig {
             layout,
             sink,
             latency_ms,
+            output_delay_ms,
         },
         dry_run: options.enabled("--dry-run"),
     })
@@ -241,6 +246,19 @@ fn parse_latency(value: &str) -> Result<u16, String> {
     Ok(latency)
 }
 
+fn parse_delay_option(value: Option<&str>) -> Result<u16, String> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    let delay = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid delay {value:?}; expected 0 through 2000 ms"))?;
+    if delay > 2000 {
+        return Err("delay must be between 0 and 2000 ms".to_owned());
+    }
+    Ok(delay)
+}
+
 fn validate_sink_token(value: &str) -> Result<(), String> {
     if value.is_empty()
         || !value
@@ -279,7 +297,16 @@ fn run_sender(args: SenderArgs) -> Result<(), String> {
         bus_sink: bus.clone(),
         old_default: old_default.clone(),
         prior_inputs,
+        local_mirror_process: None,
     };
+
+    match spawn_loopback(&plan.local_mirror) {
+        Ok(process) => session.local_mirror_process = Some(process),
+        Err(error) => {
+            let _ = session.stop();
+            return Err(error);
+        }
+    }
 
     if let Err(error) = pactl(&["set-default-sink", &bus]) {
         let _ = session.stop();
@@ -291,8 +318,12 @@ fn run_sender(args: SenderArgs) -> Result<(), String> {
     }
 
     println!(
-        "Sending {}-channel 24-bit/48 kHz PCM via RTP to {}:{}; local mirror: {}.",
-        args.config.layout, args.config.destination, args.config.port, args.config.local_sink
+        "Sending {}-channel 24-bit/48 kHz PCM via RTP to {}:{}; local mirror: {} with {} ms added delay.",
+        args.config.layout,
+        args.config.destination,
+        args.config.port,
+        args.config.local_sink,
+        args.config.local_delay_ms
     );
     println!("All system audio is routed through {bus}. Press Ctrl-C to restore the prior route.");
     let wait = wait_until_stopped();
@@ -321,6 +352,7 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
         for spec in &plan.modules {
             println!("  {} {}", spec.name, spec.args.join(" "));
         }
+        print_loopback(&plan.output_loopback);
         println!(
             "Selected sink {} currently exposes {} channels: {}.",
             sink.name,
@@ -331,13 +363,26 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
     }
 
     let ids = load_modules(&plan.modules)?;
+    let mut output_loopback = match spawn_loopback(&plan.output_loopback) {
+        Ok(process) => process,
+        Err(error) => {
+            let _ = unload_modules(&ids);
+            return Err(error);
+        }
+    };
     println!(
-        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} (HDMI sink {}, {} ms buffer). Press Ctrl-C to stop.",
-        plan.rtp_sink, args.config.layout, plan.output_sink, sink.name, args.config.latency_ms
+        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} (HDMI sink {}, {} ms buffer, {} ms added delay). Press Ctrl-C to stop.",
+        plan.rtp_sink,
+        args.config.layout,
+        plan.output_sink,
+        sink.name,
+        args.config.latency_ms,
+        args.config.output_delay_ms
     );
     let wait = wait_until_stopped();
-    let cleanup = unload_modules(&ids);
-    wait.and(cleanup)
+    let loopback_cleanup = stop_loopback(&mut output_loopback);
+    let module_cleanup = unload_modules(&ids);
+    wait.and(loopback_cleanup).and(module_cleanup)
 }
 
 fn find_pipewire_sink(name: &str) -> Result<SinkCapabilities, String> {
@@ -367,7 +412,58 @@ fn print_sender_plan(plan: &q900_bridge::SenderPlan, config: &SenderConfig) {
     for module in &plan.modules {
         println!("  {} {}", module.name, module.args.join(" "));
     }
+    print_loopback(&plan.local_mirror);
     println!("Local mirror sink: {}", config.local_sink);
+}
+
+fn loopback_args(spec: &LoopbackSpec) -> Vec<String> {
+    vec![
+        "--name".to_owned(),
+        spec.name.clone(),
+        "--capture".to_owned(),
+        spec.capture.clone(),
+        "--capture-props".to_owned(),
+        r#"{"stream.capture.sink":true}"#.to_owned(),
+        "--playback".to_owned(),
+        spec.playback.clone(),
+        "--channels".to_owned(),
+        spec.channels.to_string(),
+        "--channel-map".to_owned(),
+        spec.channel_map.clone(),
+        "--latency".to_owned(),
+        spec.latency_ms.to_string(),
+        "--delay".to_owned(),
+        format!("{:.3}", spec.delay_ms as f64 / 1000.0),
+    ]
+}
+
+fn print_loopback(spec: &LoopbackSpec) {
+    println!("  pw-loopback {}", loopback_args(spec).join(" "));
+}
+
+fn spawn_loopback(spec: &LoopbackSpec) -> Result<Child, String> {
+    Command::new("pw-loopback")
+        .args(loopback_args(spec))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("could not start pw-loopback: {error}"))
+}
+
+fn stop_loopback(process: &mut Child) -> Result<(), String> {
+    if process
+        .try_wait()
+        .map_err(|error| format!("could not check pw-loopback process: {error}"))?
+        .is_none()
+    {
+        process
+            .kill()
+            .map_err(|error| format!("could not stop pw-loopback: {error}"))?;
+    }
+    process
+        .wait()
+        .map(|_| ())
+        .map_err(|error| format!("could not reap pw-loopback process: {error}"))
 }
 
 fn load_modules(specs: &[ModuleSpec]) -> Result<Vec<String>, String> {
@@ -405,11 +501,18 @@ struct SenderSession {
     bus_sink: String,
     old_default: String,
     prior_inputs: HashMap<String, String>,
+    local_mirror_process: Option<Child>,
 }
 
 impl SenderSession {
     fn stop(&mut self) -> Result<(), String> {
-        let mut failures = restore_default_sink(&self.bus_sink, &self.old_default);
+        let mut failures = Vec::new();
+        if let Some(mut process) = self.local_mirror_process.take()
+            && let Err(error) = stop_loopback(&mut process)
+        {
+            failures.push(error);
+        }
+        failures.extend(restore_default_sink(&self.bus_sink, &self.old_default));
         failures.extend(restore_stream_sinks(self));
         if let Err(error) = unload_modules(&self.module_ids) {
             failures.push(error);
@@ -518,6 +621,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. The sync report analyzes acoustic measurements from CSV."
+        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Use the delay options to apply a fixed acoustic offset; they do not compensate clock drift."
     );
 }

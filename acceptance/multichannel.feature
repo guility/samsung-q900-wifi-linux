@@ -50,3 +50,13 @@ Feature: Multichannel RTP audio bridge
     Then it reports the initial acoustic skew and drift over time
     And it reports median, 95th percentile, and maximum skew and residual jitter
     And it recommends which output to delay to compensate the initial fixed offset
+
+  Scenario: Apply a measured fixed output offset
+    Given an acoustic measurement recommends delaying the local output by 25 milliseconds
+    When the sender starts with --local-delay-ms 25
+    Then its PipeWire loopback adds a 25 millisecond output delay
+    And its RTP branch keeps the original timing
+    When a measurement instead recommends delaying the Q900T output by 25 milliseconds
+    And the receiver starts with --output-delay-ms 25
+    Then its HDMI output loopback adds a 25 millisecond output delay
+    And the local sender output keeps the original timing

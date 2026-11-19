@@ -63,6 +63,13 @@ impl AudioLayout {
             Self::Surround71 => &["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"],
         }
     }
+
+    pub fn pipewire_rtp_channel_map(self) -> &'static str {
+        match self {
+            Self::Surround51 => "[ FL FR FC LFE RL RR ]",
+            Self::Surround71 => "[ FL FR FC LFE SL SR RL RR ]",
+        }
+    }
 }
 
 impl FromStr for AudioLayout {
@@ -91,6 +98,7 @@ pub struct SenderConfig {
     pub rate: u32,
     pub local_sink: String,
     pub latency_ms: u16,
+    pub local_delay_ms: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,12 +106,25 @@ pub struct ReceiverConfig {
     pub layout: AudioLayout,
     pub sink: String,
     pub latency_ms: u16,
+    pub output_delay_ms: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoopbackSpec {
+    pub name: String,
+    pub capture: String,
+    pub playback: String,
+    pub channels: usize,
+    pub channel_map: String,
+    pub latency_ms: u16,
+    pub delay_ms: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SenderPlan {
     pub bus_sink: String,
     pub modules: Vec<ModuleSpec>,
+    pub local_mirror: LoopbackSpec,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +132,7 @@ pub struct ReceiverPlan {
     pub rtp_sink: String,
     pub output_sink: String,
     pub modules: Vec<ModuleSpec>,
+    pub output_loopback: LoopbackSpec,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -150,19 +172,18 @@ pub fn sender_plan(bus_sink: &str, config: &SenderConfig) -> SenderPlan {
             "stream_name=Q900_Bridge".to_owned(),
         ],
     };
-    let local_mirror = ModuleSpec {
-        name: "module-loopback".to_owned(),
-        args: vec![
-            format!("source={bus_sink}.monitor"),
-            format!("sink={}", config.local_sink),
-            format!("latency_msec={}", config.latency_ms),
-            "sink_input_properties=media.name=Q900_Bridge_Local_Mirror".to_owned(),
-        ],
-    };
-
     SenderPlan {
         bus_sink: bus_sink.to_owned(),
-        modules: vec![null_sink, rtp_sender, local_mirror],
+        modules: vec![null_sink, rtp_sender],
+        local_mirror: LoopbackSpec {
+            name: format!("q900_bridge_local_{}", std::process::id()),
+            capture: bus_sink.to_owned(),
+            playback: config.local_sink.clone(),
+            channels: config.layout.channels(),
+            channel_map: config.layout.pipewire_rtp_channel_map().to_owned(),
+            latency_ms: config.latency_ms,
+            delay_ms: config.local_delay_ms,
+        },
     }
 }
 
@@ -216,27 +237,20 @@ pub fn receiver_plan(
             format!("latency_msec={}", config.latency_ms),
         ],
     };
-    let channel_mapper = ModuleSpec {
-        name: "module-loopback".to_owned(),
-        args: vec![
-            format!("source={rtp_sink}.monitor"),
-            format!("sink={output_sink}"),
-            format!("latency_msec={}", config.latency_ms),
-            format!("channels={channels}"),
-            format!("channel_map={rtp_channel_map}"),
-            "remix=1".to_owned(),
-            "source_dont_move=1".to_owned(),
-            "sink_dont_move=1".to_owned(),
-            "sink_input_properties=media.name=Q900_Bridge_RTP_Output".to_owned(),
-        ],
-    };
-
     modules.push(rtp_receiver);
-    modules.push(channel_mapper);
     ReceiverPlan {
         rtp_sink: rtp_sink.to_owned(),
-        output_sink,
+        output_sink: output_sink.clone(),
         modules,
+        output_loopback: LoopbackSpec {
+            name: format!("q900_bridge_output_{}", std::process::id()),
+            capture: rtp_sink.to_owned(),
+            playback: output_sink.clone(),
+            channels: config.layout.channels(),
+            channel_map: config.layout.pipewire_rtp_channel_map().to_owned(),
+            latency_ms: config.latency_ms,
+            delay_ms: config.output_delay_ms,
+        },
     }
 }
 

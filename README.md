@@ -6,7 +6,7 @@ The destination and open product decisions are tracked in the [Wayfinder map](ht
 
 ## Requirements
 
-- Linux with PipeWire and its PulseAudio compatibility server (`pactl`).
+- Linux with PipeWire, its PulseAudio compatibility server (`pactl`), and the `pw-loopback` client.
 - IPv4 multicast enabled on the Wi-Fi LAN. The default RTP/SAP address is `224.0.0.56`, with RTP port `5004`.
 - The receiver must expose an active PipeWire sink with the requested channel count. Standard HDMI profiles must report the expected speaker positions. For a Pro Audio sink with `AUX0…AUX7` positions, the matching HDMI card port must also report connected; a Pro Audio profile alone does not prove an HDMI device is present.
 - To connect the receiver to a Q900T, the HDMI source and Q900T must negotiate multichannel LPCM. This has not yet been verified on the available hardware. The Q900T Bluetooth A2DP path is stereo SBC and is rejected as a local mirror by the sender.
@@ -48,7 +48,9 @@ cargo run -- sync-report --input acceptance/sample-sync-observations.csv
 
 The required columns are `elapsed_s,local_ms,q900_ms`. Both arrival columns must use the same recorder timebase; use a single microphone/recorder clock at the listening position. The example file is synthetic and demonstrates an 8 ms fixed offset only. The report fits fixed offset and linear drift, summarizes absolute skew and residual jitter, and recommends which output to delay at the start of the sample.
 
-This command analyzes measurements; it does not record the microphone, alter output timing, or compensate clock drift. A measured output offset is not a video or game input-latency result. Use the separate acoustic, video, and game procedures in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2). The current 100 ms RTP settings remain buffers, not synchronization guarantees.
+Apply the report's fixed-delay recommendation when starting playback: use `--local-delay-ms N` on the sender when the local output arrives first, or `--output-delay-ms N` on the receiver when the Q900T output arrives first. Both use PipeWire's explicit `pw-loopback --delay` control and accept 0–2000 ms. They compensate a fixed offset only; drift needs a shared clock and remains uncorrected. The `--latency-ms` setting controls buffering, not added delay.
+
+The report does not record the microphone or alter playback timing itself. A measured output offset is not a video or game input-latency result. Use the separate acoustic, video, and game procedures in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2). The current 100 ms RTP settings remain buffers, not synchronization guarantees.
 
 Start the sender on the source host:
 
