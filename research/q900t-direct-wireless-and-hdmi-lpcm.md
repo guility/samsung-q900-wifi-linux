@@ -2,6 +2,8 @@
 
 Research date: 2026-11-19
 
+Context: [Wayfinder issue #9](https://github.com/guility/samsung-q900-wifi-linux/issues/9).
+
 ## Finding
 
 **There is no documented direct generic Linux Wi-Fi or Bluetooth path that delivers above-SBC 5.1/7.1 audio to the HW-Q900T.** Samsung lists the Q900T Bluetooth codec as SBC; its manual describes Bluetooth listening as stereo and says the bar supports SBC at 44.1/48 kHz over A2DP. Samsung's manual describes Wi-Fi audio connection to a TV as available only with Samsung TVs. The product also lists Spotify Connect, but neither Samsung source describes that service feature as a general network PCM input or 5.1/7.1 channel-mapped input. This is a conclusion about documented interfaces; it does not prove that no undocumented protocol exists.
