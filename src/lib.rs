@@ -144,20 +144,22 @@ pub struct SenderPlan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputRoute {
+    pub sink: String,
+    pub delay_ms: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirrorConfig {
-    pub local_sink: String,
-    pub q900_sink: String,
+    pub outputs: Vec<OutputRoute>,
     pub latency_ms: u16,
-    pub local_delay_ms: u16,
-    pub q900_delay_ms: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MirrorPlan {
     pub bus_sink: String,
     pub modules: Vec<ModuleSpec>,
-    pub local_output: LoopbackSpec,
-    pub q900_output: LoopbackSpec,
+    pub outputs: Vec<LoopbackSpec>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -233,31 +235,26 @@ pub fn mirror_plan(bus_sink: &str, config: &MirrorConfig) -> MirrorPlan {
             "channels=2".to_owned(),
             "rate=48000".to_owned(),
             "channel_map=front-left,front-right".to_owned(),
-            "sink_properties=device.description=Q900_Bridge_Stereo".to_owned(),
+            "sink_properties=device.description=Audio_Mirror_Stereo".to_owned(),
         ],
-    };
-    let loopback = |name: String, playback: &str, delay_ms| LoopbackSpec {
-        name,
-        capture: bus_sink.to_owned(),
-        playback: playback.to_owned(),
-        channels: 2,
-        channel_map: "[ FL FR ]".to_owned(),
-        latency_ms: config.latency_ms,
-        delay_ms,
     };
     MirrorPlan {
         bus_sink: bus_sink.to_owned(),
         modules: vec![stereo_bus],
-        local_output: loopback(
-            format!("q900_bridge_local_{}", std::process::id()),
-            &config.local_sink,
-            config.local_delay_ms,
-        ),
-        q900_output: loopback(
-            format!("q900_bridge_q900_{}", std::process::id()),
-            &config.q900_sink,
-            config.q900_delay_ms,
-        ),
+        outputs: config
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(index, output)| LoopbackSpec {
+                name: format!("audio_mirror_output_{index}_{}", std::process::id()),
+                capture: bus_sink.to_owned(),
+                playback: output.sink.clone(),
+                channels: 2,
+                channel_map: "[ FL FR ]".to_owned(),
+                latency_ms: config.latency_ms,
+                delay_ms: output.delay_ms,
+            })
+            .collect(),
     }
 }
 

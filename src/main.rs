@@ -1,9 +1,9 @@
 use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::sync::{OutputPath, analyze_sync, parse_sync_csv};
 use q900_bridge::{
-    AudioLayout, LoopbackSpec, MirrorConfig, MirrorPlan, ModuleSpec, ReceiverConfig, SenderConfig,
-    SinkCapabilities, has_auxiliary_channel_map, mirror_plan, parse_pipewire_sinks, receiver_plan,
-    sender_plan, validate_aux_hdmi_route, validate_receiver_sink,
+    AudioLayout, LoopbackSpec, MirrorConfig, MirrorPlan, ModuleSpec, OutputRoute, ReceiverConfig,
+    SenderConfig, SinkCapabilities, has_auxiliary_channel_map, mirror_plan, parse_pipewire_sinks,
+    receiver_plan, sender_plan, validate_aux_hdmi_route, validate_receiver_sink,
 };
 use std::collections::HashMap;
 use std::env;
@@ -77,11 +77,11 @@ fn run_sync_report(args: &[String]) -> Result<(), String> {
     println!("Max residual jitter: {:.3} ms", report.max_jitter_ms);
     match report.delay_earlier_output {
         Some(OutputPath::Local) => println!(
-            "Recommended compensation: delay local output by {:.3} ms with --local-delay-ms",
+            "Recommended compensation: delay the earlier output by {:.3} ms; set it on that `--output SINK=DELAY_MS` route",
             report.recommended_delay_ms
         ),
         Some(OutputPath::Q900T) => println!(
-            "Recommended compensation: delay Q900T by {:.3} ms with --q900-delay-ms in mirror or --output-delay-ms in receiver",
+            "Recommended compensation: delay the Q900T output by {:.3} ms; set it on that `--output SINK=DELAY_MS` route",
             report.recommended_delay_ms
         ),
         None => println!("Recommended compensation: no fixed delay"),
@@ -151,39 +151,62 @@ fn parse_sender_args(args: &[String]) -> Result<SenderArgs, String> {
 }
 
 fn parse_mirror_args(args: &[String]) -> Result<MirrorArgs, String> {
-    let options = parse_options(
-        args,
-        &[
-            "--local-sink",
-            "--q900-sink",
-            "--latency-ms",
-            "--local-delay-ms",
-            "--q900-delay-ms",
-        ],
-        &["--dry-run"],
-    )?;
-    let local_sink = options
-        .value("--local-sink")
-        .ok_or_else(|| "mirror requires --local-sink SINK_NAME".to_owned())?
-        .to_owned();
-    let q900_sink = options
-        .value("--q900-sink")
-        .ok_or_else(|| "mirror requires --q900-sink SINK_NAME".to_owned())?
-        .to_owned();
-    validate_sink_token(&local_sink)?;
-    validate_sink_token(&q900_sink)?;
-    if local_sink == q900_sink {
-        return Err("--local-sink and --q900-sink must name different outputs".to_owned());
+    let mut outputs = Vec::new();
+    let mut latency = None;
+    let mut dry_run = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--output requires SINK_NAME[=DELAY_MS]".to_owned())?;
+                let (sink, delay) = match value.split_once('=') {
+                    Some((sink, delay)) => (sink, parse_delay_option(Some(delay))?),
+                    None => (value.as_str(), 0),
+                };
+                validate_sink_token(sink)?;
+                if outputs
+                    .iter()
+                    .any(|output: &OutputRoute| output.sink == sink)
+                {
+                    return Err(format!("output sink {sink:?} was specified more than once"));
+                }
+                outputs.push(OutputRoute {
+                    sink: sink.to_owned(),
+                    delay_ms: delay,
+                });
+                index += 2;
+            }
+            "--latency-ms" => {
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| "--latency-ms requires a value".to_owned())?;
+                if latency.replace(value.clone()).is_some() {
+                    return Err("--latency-ms may only be specified once".to_owned());
+                }
+                index += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            flag => return Err(format!("unknown option {flag:?}")),
+        }
+    }
+    if outputs.len() < 2 {
+        return Err(
+            "mirror requires at least two --output SINK_NAME[=DELAY_MS] entries".to_owned(),
+        );
     }
     Ok(MirrorArgs {
         config: MirrorConfig {
-            local_sink,
-            q900_sink,
-            latency_ms: parse_latency_option(options.value("--latency-ms"))?,
-            local_delay_ms: parse_delay_option(options.value("--local-delay-ms"))?,
-            q900_delay_ms: parse_delay_option(options.value("--q900-delay-ms"))?,
+            outputs,
+            latency_ms: parse_latency_option(latency.as_deref())?,
         },
-        dry_run: options.enabled("--dry-run"),
+        dry_run,
     })
 }
 
@@ -384,43 +407,45 @@ fn validate_sink_token(value: &str) -> Result<(), String> {
 }
 
 fn run_mirror(args: MirrorArgs) -> Result<(), String> {
-    let local_sink = find_pipewire_sink(&args.config.local_sink)?;
-    validate_stereo_sink(&local_sink, "local output")?;
-    let q900_sink = find_pipewire_sink(&args.config.q900_sink)?;
-    validate_stereo_sink(&q900_sink, "Q900 output")?;
+    let sinks: Vec<SinkCapabilities> = args
+        .config
+        .outputs
+        .iter()
+        .map(|output| {
+            let sink = find_pipewire_sink(&output.sink)?;
+            validate_stereo_sink(&sink, &format!("output {}", output.sink))?;
+            Ok(sink)
+        })
+        .collect::<Result<_, String>>()?;
 
-    let bus = format!("q900_stereo_{}", std::process::id());
+    let bus = format!("audio_mirror_stereo_{}", std::process::id());
     let plan = mirror_plan(&bus, &args.config);
     if args.dry_run {
         print_mirror_plan(&plan, &args.config);
-        print_q900_transport(&q900_sink);
+        for sink in &sinks {
+            print_output_transport(sink);
+        }
         return Ok(());
     }
 
     let old_default = pactl_output(&["get-default-sink"])?.trim().to_owned();
     let prior_inputs = current_sink_inputs()?;
     let module_ids = load_modules(&plan.modules)?;
-    let mut session = SenderSession {
+    let mut session = AudioSession {
         module_ids,
         bus_sink: bus.clone(),
         old_default: old_default.clone(),
         prior_inputs,
-        local_mirror_process: None,
-        q900_mirror_process: None,
+        loopback_processes: Vec::new(),
     };
 
-    match spawn_loopback(&plan.local_output) {
-        Ok(process) => session.local_mirror_process = Some(process),
-        Err(error) => {
-            let _ = session.stop();
-            return Err(error);
-        }
-    }
-    match spawn_loopback(&plan.q900_output) {
-        Ok(process) => session.q900_mirror_process = Some(process),
-        Err(error) => {
-            let _ = session.stop();
-            return Err(error);
+    for output in &plan.outputs {
+        match spawn_loopback(output) {
+            Ok(process) => session.loopback_processes.push(process),
+            Err(error) => {
+                let _ = session.stop();
+                return Err(error);
+            }
         }
     }
     if let Err(error) = pactl(&["set-default-sink", &bus]) {
@@ -433,10 +458,18 @@ fn run_mirror(args: MirrorArgs) -> Result<(), String> {
     }
 
     println!(
-        "Mirroring all system audio as stereo to local output {} and Q900 output sink {}.",
-        args.config.local_sink, args.config.q900_sink
+        "Mirroring all system audio as stereo to {} outputs.",
+        sinks.len()
     );
-    print_q900_transport(&q900_sink);
+    for (index, (output, sink)) in args.config.outputs.iter().zip(&sinks).enumerate() {
+        println!(
+            "  output {}: {} ({} ms added delay)",
+            index + 1,
+            output.sink,
+            output.delay_ms
+        );
+        print_output_transport(sink);
+    }
     println!("Press Ctrl-C to restore the prior route.");
     let wait = wait_until_stopped();
     let cleanup = session.stop();
@@ -447,18 +480,16 @@ fn validate_stereo_sink(sink: &SinkCapabilities, role: &str) -> Result<(), Strin
     validate_receiver_sink(sink, AudioLayout::Stereo).map_err(|error| format!("{role}: {error}"))
 }
 
-fn print_q900_transport(sink: &SinkCapabilities) {
+fn print_output_transport(sink: &SinkCapabilities) {
     if sink.device_api.as_deref() == Some("bluez5") || sink.name.starts_with("bluez_output.") {
-        println!("Q900 transport: Bluetooth A2DP; active codec may use SBC.");
+        println!("  transport hint: Bluetooth A2DP; active codec may use SBC.");
     } else if sink.device_api.as_deref() == Some("alsa")
         && sink.name.to_ascii_lowercase().contains("spdif")
     {
-        println!(
-            "Q900 transport: stereo PCM over S/PDIF; confirm the optical cable and Q900 input."
-        );
+        println!("  transport hint: stereo PCM over S/PDIF; confirm the cable and endpoint input.");
     } else {
         println!(
-            "Q900 transport: selected PipeWire sink; confirm its codec and physical connection."
+            "  transport hint: selected PipeWire sink; confirm its format and physical connection."
         );
     }
 }
@@ -485,17 +516,16 @@ fn run_sender(args: SenderArgs) -> Result<(), String> {
     let old_default = pactl_output(&["get-default-sink"])?.trim().to_owned();
     let prior_inputs = current_sink_inputs()?;
     let module_ids = load_modules(&plan.modules)?;
-    let mut session = SenderSession {
+    let mut session = AudioSession {
         module_ids,
         bus_sink: bus.clone(),
         old_default: old_default.clone(),
         prior_inputs,
-        local_mirror_process: None,
-        q900_mirror_process: None,
+        loopback_processes: Vec::new(),
     };
 
     match spawn_loopback(&plan.local_mirror) {
-        Ok(process) => session.local_mirror_process = Some(process),
+        Ok(process) => session.loopback_processes.push(process),
         Err(error) => {
             let _ = session.stop();
             return Err(error);
@@ -776,15 +806,23 @@ fn find_pipewire_sink(name: &str) -> Result<SinkCapabilities, String> {
 }
 
 fn print_mirror_plan(plan: &MirrorPlan, config: &MirrorConfig) {
-    println!("Stereo mirror plan: 2-channel s24be/48000 Hz system sink");
+    println!(
+        "Stereo mirror plan: 2-channel s24be/48000 Hz bus to {} outputs",
+        config.outputs.len()
+    );
     println!("System sink: {}", plan.bus_sink);
     for module in &plan.modules {
         println!("  {} {}", module.name, module.args.join(" "));
     }
-    print_loopback(&plan.local_output);
-    println!("Local output sink: {}", config.local_sink);
-    print_loopback(&plan.q900_output);
-    println!("Q900 output sink: {}", config.q900_sink);
+    for (index, (loopback, output)) in plan.outputs.iter().zip(&config.outputs).enumerate() {
+        println!(
+            "Output {}: {} ({} ms added delay)",
+            index + 1,
+            output.sink,
+            output.delay_ms
+        );
+        print_loopback(loopback);
+    }
 }
 
 fn print_sender_plan(plan: &q900_bridge::SenderPlan, config: &SenderConfig) {
@@ -887,27 +925,21 @@ fn unload_modules(ids: &[String]) -> Result<(), String> {
     }
 }
 
-struct SenderSession {
+struct AudioSession {
     module_ids: Vec<String>,
     bus_sink: String,
     old_default: String,
     prior_inputs: HashMap<String, String>,
-    local_mirror_process: Option<Child>,
-    q900_mirror_process: Option<Child>,
+    loopback_processes: Vec<Child>,
 }
 
-impl SenderSession {
+impl AudioSession {
     fn stop(&mut self) -> Result<(), String> {
         let mut failures = Vec::new();
-        if let Some(mut process) = self.local_mirror_process.take()
-            && let Err(error) = stop_loopback(&mut process)
-        {
-            failures.push(error);
-        }
-        if let Some(mut process) = self.q900_mirror_process.take()
-            && let Err(error) = stop_loopback(&mut process)
-        {
-            failures.push(error);
+        for mut process in self.loopback_processes.drain(..).rev() {
+            if let Err(error) = stop_loopback(&mut process) {
+                failures.push(error);
+            }
         }
         failures.extend(restore_default_sink(&self.bus_sink, &self.old_default));
         failures.extend(restore_stream_sinks(self));
@@ -934,7 +966,7 @@ fn restore_default_sink(bus_sink: &str, old_default: &str) -> Vec<String> {
     }
 }
 
-fn restore_stream_sinks(session: &SenderSession) -> Vec<String> {
+fn restore_stream_sinks(session: &AudioSession) -> Vec<String> {
     let mut failures = Vec::new();
     match current_sink_inputs() {
         Ok(inputs) => {
@@ -956,7 +988,7 @@ fn restore_stream_sinks(session: &SenderSession) -> Vec<String> {
     failures
 }
 
-fn move_inputs_to_bus(session: &SenderSession) -> Result<(), String> {
+fn move_inputs_to_bus(session: &AudioSession) -> Result<(), String> {
     for input_id in session.prior_inputs.keys() {
         if let Err(error) = pactl(&["move-sink-input", input_id, &session.bus_sink]) {
             // A stream can disappear between enumeration and movement.
@@ -1018,6 +1050,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge mirror --local-sink NAME --q900-sink SINK_NAME [--latency-ms MS] [--local-delay-ms MS] [--q900-delay-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to a local output and the selected Q900 sink. Bluetooth A2DP may use SBC; an optical S/PDIF sink carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through the selected output sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
+        "Usage:\n  q900-bridge mirror --output SINK_NAME[=DELAY_MS] --output SINK_NAME[=DELAY_MS]... [--latency-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to any number of selected PipeWire outputs; append =DELAY_MS to set a fixed delay for one output. Bluetooth A2DP may use SBC; optical S/PDIF carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to one local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through a selected output sink. Fixed delays do not compensate clock drift. Microphone-based automatic calibration is planned, but is not implemented yet."
     );
 }

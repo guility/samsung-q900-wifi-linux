@@ -1,8 +1,8 @@
 use q900_bridge::lpcm::{channel_tones, write_channel_identification_tones};
 use q900_bridge::{
-    AudioLayout, MirrorConfig, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
-    has_auxiliary_channel_map, mirror_plan, parse_pipewire_sinks, receiver_plan, sender_plan,
-    validate_aux_hdmi_route, validate_receiver_sink,
+    AudioLayout, MirrorConfig, ModuleSpec, OutputRoute, ReceiverConfig, SenderConfig,
+    SinkCapabilities, has_auxiliary_channel_map, mirror_plan, parse_pipewire_sinks, receiver_plan,
+    sender_plan, validate_aux_hdmi_route, validate_receiver_sink,
 };
 use std::io::Cursor;
 use std::net::Ipv4Addr;
@@ -215,13 +215,23 @@ fn sender_plan_sends_stereo_pcm_and_mirrors_to_host_sink() {
 }
 
 #[test]
-fn stereo_mirror_plan_fans_out_to_local_and_bluetooth_outputs() {
+fn stereo_mirror_plan_fans_out_to_any_number_of_outputs_with_independent_delays() {
     let config = MirrorConfig {
-        local_sink: "alsa_output.hdmi_stereo".to_owned(),
-        q900_sink: "bluez_output.q900t".to_owned(),
+        outputs: vec![
+            OutputRoute {
+                sink: "alsa_output.hdmi_stereo".to_owned(),
+                delay_ms: 85,
+            },
+            OutputRoute {
+                sink: "bluez_output.q900t".to_owned(),
+                delay_ms: 0,
+            },
+            OutputRoute {
+                sink: "alsa_output.spdif".to_owned(),
+                delay_ms: 12,
+            },
+        ],
         latency_ms: 100,
-        local_delay_ms: 85,
-        q900_delay_ms: 0,
     };
     let plan = mirror_plan("q900_stereo_test", &config);
 
@@ -236,16 +246,18 @@ fn stereo_mirror_plan_fans_out_to_local_and_bluetooth_outputs() {
             .iter()
             .any(|arg| arg == "channel_map=front-left,front-right")
     );
-    assert_eq!(plan.local_output.capture, "q900_stereo_test");
-    assert_eq!(plan.local_output.playback, config.local_sink);
-    assert_eq!(plan.local_output.channels, 2);
-    assert_eq!(plan.local_output.channel_map, "[ FL FR ]");
-    assert_eq!(plan.local_output.delay_ms, 85);
-    assert_eq!(plan.q900_output.capture, "q900_stereo_test");
-    assert_eq!(plan.q900_output.playback, config.q900_sink);
-    assert_eq!(plan.q900_output.channels, 2);
-    assert_eq!(plan.q900_output.channel_map, "[ FL FR ]");
-    assert_eq!(plan.q900_output.delay_ms, 0);
+    assert_eq!(plan.outputs.len(), 3);
+    for output in &plan.outputs {
+        assert_eq!(output.capture, "q900_stereo_test");
+        assert_eq!(output.channels, 2);
+        assert_eq!(output.channel_map, "[ FL FR ]");
+    }
+    assert_eq!(plan.outputs[0].playback, config.outputs[0].sink);
+    assert_eq!(plan.outputs[0].delay_ms, 85);
+    assert_eq!(plan.outputs[1].playback, config.outputs[1].sink);
+    assert_eq!(plan.outputs[1].delay_ms, 0);
+    assert_eq!(plan.outputs[2].playback, config.outputs[2].sink);
+    assert_eq!(plan.outputs[2].delay_ms, 12);
 }
 
 #[test]

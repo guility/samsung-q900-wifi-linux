@@ -26,4 +26,5 @@
       (should= 0 exit)
       (should-contain "stereo" out)
       (should-contain "7.1" out)
-      (should-contain "--q900-sink SINK_NAME" out))))
+      (should-contain "--output SINK_NAME[=DELAY_MS]" out)
+      (should-contain "Microphone-based automatic calibration is planned" out))))

@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -69,18 +70,16 @@ fn sender_dry_run_sends_stereo_pcm_over_rtp() {
 }
 
 #[test]
-fn mirror_dry_run_shows_two_stereo_outputs_and_independent_delays() {
+fn mirror_dry_run_shows_three_stereo_outputs_and_independent_delays() {
     let tools = FakeAudioTools::new();
     let output = tools.run(&[
         "mirror",
-        "--local-sink",
-        "test_hdmi",
-        "--q900-sink",
-        "bluez_output.q900t",
-        "--local-delay-ms",
-        "85",
-        "--q900-delay-ms",
-        "12",
+        "--output",
+        "test_hdmi=85",
+        "--output",
+        "bluez_output.q900t=12",
+        "--output",
+        "alsa_output.test_spdif",
         "--dry-run",
     ]);
 
@@ -90,17 +89,18 @@ fn mirror_dry_run_shows_two_stereo_outputs_and_independent_delays() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Stereo mirror plan: 2-channel s24be/48000 Hz"));
+    assert!(stdout.contains("Stereo mirror plan: 2-channel s24be/48000 Hz bus to 3 outputs"));
     assert!(stdout.contains("channels=2"));
-    assert!(stdout.contains("Local output sink: test_hdmi"));
-    assert!(stdout.contains("Q900 output sink: bluez_output.q900t"));
+    assert!(stdout.contains("Output 1: test_hdmi (85 ms added delay)"));
+    assert!(stdout.contains("Output 2: bluez_output.q900t (12 ms added delay)"));
+    assert!(stdout.contains("Output 3: alsa_output.test_spdif (0 ms added delay)"));
     assert!(stdout.contains("--delay 0.085"));
     assert!(stdout.contains("--delay 0.012"));
-    assert!(stdout.contains("may use SBC"));
+    assert!(stdout.contains("Bluetooth A2DP; active codec may use SBC"));
 }
 
 #[test]
-fn mirror_dry_run_accepts_q900_optical_stereo_pcm_sink() {
+fn mirror_dry_run_identifies_s_pdif_as_stereo_pcm() {
     let output = mirror_dry_run("alsa_output.test_spdif");
 
     assert!(
@@ -109,9 +109,9 @@ fn mirror_dry_run_accepts_q900_optical_stereo_pcm_sink() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Q900 output sink: alsa_output.test_spdif"));
-    assert!(stdout.contains("Q900 transport: stereo PCM over S/PDIF"));
-    assert!(!stdout.contains("may use SBC"));
+    assert!(stdout.contains("Output 2: alsa_output.test_spdif"));
+    assert!(stdout.contains("transport hint: stereo PCM over S/PDIF"));
+    assert!(!stdout.contains("Bluetooth A2DP"));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn mirror_dry_run_recognizes_bluetooth_from_pipewire_device_api() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Q900 transport: Bluetooth A2DP"));
+    assert!(stdout.contains("transport hint: Bluetooth A2DP"));
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn mirror_dry_run_recognizes_bluetooth_from_sink_name_when_api_is_missing() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Q900 transport: Bluetooth A2DP"));
+    assert!(stdout.contains("transport hint: Bluetooth A2DP"));
 }
 
 #[test]
@@ -138,19 +138,37 @@ fn mirror_dry_run_does_not_label_every_alsa_sink_as_spdif() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Q900 transport: selected PipeWire sink"));
+    assert!(stdout.contains("transport hint: selected PipeWire sink"));
     assert!(!stdout.contains("stereo PCM over S/PDIF"));
 }
 
 fn mirror_dry_run(q900_sink: &str) -> Output {
     FakeAudioTools::new().run(&[
         "mirror",
-        "--local-sink",
+        "--output",
         "test_hdmi",
-        "--q900-sink",
+        "--output",
         q900_sink,
         "--dry-run",
     ])
+}
+
+#[test]
+fn mirror_requires_two_unique_output_sinks() {
+    let too_few = run_cli(&["mirror", "--output", "test_hdmi", "--dry-run"]);
+    assert!(!too_few.status.success());
+    assert!(String::from_utf8_lossy(&too_few.stderr).contains("at least two --output"));
+
+    let duplicate = run_cli(&[
+        "mirror",
+        "--output",
+        "test_hdmi",
+        "--output",
+        "test_hdmi=30",
+        "--dry-run",
+    ]);
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("specified more than once"));
 }
 
 #[test]
@@ -384,7 +402,7 @@ fn lpcm_check_stops_before_playback_when_interrupted_during_startup() {
     let mut child = tools.launch(&["lpcm-check", "--sink", "test_hdmi", "--layout", "stereo"]);
     wait_for_log(&tools.log_file, "load-module module-null-sink");
     let loopback_pids = wait_for_line_count(&tools.loopback_pid_file, 1);
-    stop_with_sigint(&mut child);
+    let _ = stop_with_sigint(&mut child);
 
     assert!(!tools.pw_cat_log_file.exists());
     let log = fs::read_to_string(&tools.log_file).unwrap();
@@ -562,7 +580,8 @@ fn sync_report_reads_acoustic_observations_from_csv() {
     assert!(stdout.contains("Drift: 0.000 ms/min"));
     assert!(stdout.contains("Median |skew|: 8.000 ms"));
     assert!(stdout.contains("P95 |skew|: 8.000 ms"));
-    assert!(stdout.contains("delay local output by 8.000 ms"));
+    assert!(stdout.contains("delay the earlier output by 8.000 ms"));
+    assert!(stdout.contains("--output SINK=DELAY_MS"));
 }
 
 #[test]
@@ -609,7 +628,7 @@ fn sender_restores_default_and_unloads_modules_after_sigint() {
     wait_for_prefix(&tools.loopback_pid_file, "");
     wait_for_log(&tools.log_file, &format!("move-sink-input 10 {bus}"));
     thread::sleep(Duration::from_millis(150));
-    stop_with_sigint(&mut child);
+    let _ = stop_with_sigint(&mut child);
 
     assert_eq!(
         fs::read_to_string(&tools.default_file).unwrap(),
@@ -624,20 +643,22 @@ fn sender_restores_default_and_unloads_modules_after_sigint() {
 }
 
 #[test]
-fn mirror_restores_routes_and_stops_both_output_loopbacks_after_sigint() {
+fn mirror_restores_routes_and_stops_every_output_loopback_after_sigint() {
     let tools = FakeAudioTools::new();
     let mut child = tools.launch(&[
         "mirror",
-        "--local-sink",
+        "--output",
         "test_hdmi",
-        "--q900-sink",
+        "--output",
         "bluez_output.q900t",
+        "--output",
+        "alsa_output.test_spdif",
     ]);
-    let bus = wait_for_prefix(&tools.default_file, "q900_stereo_");
-    let loopbacks = wait_for_line_count(&tools.loopback_pid_file, 2);
+    let bus = wait_for_prefix(&tools.default_file, "audio_mirror_stereo_");
+    let loopbacks = wait_for_line_count(&tools.loopback_pid_file, 3);
     wait_for_log(&tools.log_file, &format!("move-sink-input 10 {bus}"));
     thread::sleep(Duration::from_millis(150));
-    stop_with_sigint(&mut child);
+    let stdout = stop_with_sigint(&mut child);
 
     assert_eq!(
         fs::read_to_string(&tools.default_file).unwrap(),
@@ -647,11 +668,15 @@ fn mirror_restores_routes_and_stops_both_output_loopbacks_after_sigint() {
     assert!(log.contains(&format!("set-default-sink {bus}")));
     assert!(log.contains("set-default-sink original"));
     assert!(log.contains("move-sink-input 10 original"));
+    assert!(stdout.contains("  output 1: test_hdmi (0 ms added delay)"));
+    assert!(stdout.contains("  output 2: bluez_output.q900t (0 ms added delay)"));
+    assert!(stdout.contains("  output 3: alsa_output.test_spdif (0 ms added delay)"));
     assert_eq!(log.matches("load-module module-null-sink").count(), 1);
     assert_eq!(log.matches("unload-module 100").count(), 1);
     let loopback_log = fs::read_to_string(&tools.loopback_log_file).unwrap();
-    assert!(loopback_log.contains("q900_bridge_local_"));
-    assert!(loopback_log.contains("q900_bridge_q900_"));
+    assert!(loopback_log.contains("audio_mirror_output_0_"));
+    assert!(loopback_log.contains("audio_mirror_output_1_"));
+    assert!(loopback_log.contains("audio_mirror_output_2_"));
     assert_loopback_pids_stopped(&loopbacks);
 }
 
@@ -669,7 +694,7 @@ fn sender_ignores_a_stream_that_disappears_during_routing() {
     ]);
     wait_for_log(&tools.log_file, "move-sink-input 10 q900_bridge_");
     thread::sleep(Duration::from_millis(150));
-    stop_with_sigint(&mut child);
+    let _ = stop_with_sigint(&mut child);
 
     let log = fs::read_to_string(&tools.log_file).unwrap();
     assert!(log.contains("set-default-sink original"));
@@ -684,7 +709,7 @@ fn receiver_loads_rtp_module_and_unloads_it_after_sigint() {
     wait_for_log(&tools.log_file, "load-module module-rtp-recv");
     wait_for_prefix(&tools.loopback_pid_file, "");
     thread::sleep(Duration::from_millis(150));
-    stop_with_sigint(&mut child);
+    let _ = stop_with_sigint(&mut child);
 
     let log = fs::read_to_string(&tools.log_file).unwrap();
     assert_eq!(log.matches("unload-module 100").count(), 2);
@@ -728,7 +753,7 @@ fn wait_for_line_count(path: &std::path::Path, expected: usize) -> String {
     );
 }
 
-fn stop_with_sigint(child: &mut std::process::Child) {
+fn stop_with_sigint(child: &mut std::process::Child) -> String {
     let pid = child.id().to_string();
     let signal = Command::new("kill")
         .args(["-INT", &pid])
@@ -736,6 +761,14 @@ fn stop_with_sigint(child: &mut std::process::Child) {
         .expect("kill command should be available");
     assert!(signal.success());
     assert!(child.wait().expect("child should exit").success());
+    let mut stdout = String::new();
+    child
+        .stdout
+        .as_mut()
+        .expect("child stdout should be captured")
+        .read_to_string(&mut stdout)
+        .expect("child stdout should be readable");
+    stdout
 }
 
 fn wait_for_prefix(path: &std::path::Path, prefix: &str) -> String {
@@ -924,7 +957,7 @@ cat > "$Q900_FAKE_PW_CAT_PCM"
                 "Q900_FAKE_MISSING_MOVE_ONCE",
                 if self.missing_move_once { "1" } else { "0" },
             )
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("q900-bridge process should start")

@@ -1,19 +1,29 @@
 Feature: PipeWire RTP audio bridge
 
-  Scenario: Mirror stereo system audio to the Q900 over Bluetooth
-    Given the local output and Q900 Bluetooth sink expose stereo FL and FR
-    When the user starts mirror with both sink names
+  Scenario: Mirror system audio to three selected stereo outputs
+    Given three selected PipeWire sinks expose stereo FL and FR
+    When the user starts mirror with three repeated --output options
     Then it routes system audio through a two-channel 48 kHz virtual sink
-    And it creates independent stereo loopbacks to the local output and Q900
+    And it creates one independent loopback for each selected output
+    And each output can have its own fixed delay
+    And Ctrl-C restores the previous default sink and stream routes
+
+  Scenario: Mirror stereo system audio to the Q900 over Bluetooth
+    Given two selected PipeWire sinks expose stereo FL and FR
+    And one selected sink is the Q900 Bluetooth output
+    When the user starts mirror with two --output options
+    Then it routes system audio through a two-channel 48 kHz virtual sink
+    And it creates an independent stereo loopback for each selected sink
     And it does not require an RTP receiver
-    And it reports that the active Q900 Bluetooth profile may use SBC
+    And it reports that a Bluetooth A2DP output may use SBC
 
   Scenario: Mirror stereo PCM to the Q900 through an optical output sink
-    Given the local output and Q900 optical sink expose stereo FL and FR
-    When the user starts mirror with the optical sink as the Q900 output
+    Given two selected PipeWire sinks expose stereo FL and FR
+    And one selected sink is an optical S/PDIF output
+    When the user starts mirror with two --output options
     Then it routes system audio through a two-channel 48 kHz virtual sink
-    And it creates independent stereo loopbacks to the local output and optical sink
-    And it reports S/PDIF PCM and asks the user to confirm the cable and Q900 input
+    And it creates an independent stereo loopback for each selected sink
+    And it reports S/PDIF PCM and asks the user to confirm the cable and endpoint input
     And it does not report a Bluetooth codec for the optical path
 
   Scenario: Send raw stereo PCM over Wi-Fi to a receiver
@@ -97,3 +107,13 @@ Feature: PipeWire RTP audio bridge
     And the receiver starts with --output-delay-ms 25
     Then its HDMI output loopback adds a 25 millisecond output delay
     And the local sender output keeps the original timing
+
+  @planned
+  Scenario: Calibrate relative output delays from a microphone
+    Given a PipeWire microphone is placed at a fixed measurement point
+    And two or more selected outputs can play a calibration probe
+    When the user starts microphone calibration
+    Then it records each probe arrival on one capture clock
+    And it estimates relative output delay from the recorded signals
+    And it delays earlier outputs to align them at the microphone
+    And it does not claim to correct long-term clock drift
