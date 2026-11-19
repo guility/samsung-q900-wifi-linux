@@ -383,14 +383,22 @@ fn reads_stereo_channel_capabilities_from_suspended_bluez_enum_format() {
                     "device.api": "bluez5"
                 },
                 "params": {
-                    "EnumFormat": [{
-                        "mediaType": "audio",
-                        "mediaSubtype": "raw",
-                        "format": "S16LE",
-                        "rate": 48000,
-                        "channels": 2,
-                        "position": ["FL", "FR"]
-                    }]
+                    "EnumFormat": [
+                        {
+                            "mediaType": "audio",
+                            "mediaSubtype": "iec958",
+                            "channels": 8,
+                            "position": ["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"]
+                        },
+                        {
+                            "mediaType": "audio",
+                            "mediaSubtype": "raw",
+                            "format": "S16LE",
+                            "rate": 48000,
+                            "channels": 2,
+                            "position": ["FL", "FR"]
+                        }
+                    ]
                 }
             }
         }
