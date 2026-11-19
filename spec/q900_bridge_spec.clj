@@ -25,4 +25,5 @@
     (let [{:keys [exit out]} (run-bridge "--help")]
       (should= 0 exit)
       (should-contain "stereo" out)
-      (should-contain "7.1" out))))
+      (should-contain "7.1" out)
+      (should-contain "--q900-sink SINK_NAME" out))))

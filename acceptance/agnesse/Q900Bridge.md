@@ -19,3 +19,4 @@ target/debug/q900-bridge-slim
 | check | senderPlanContains; | 7.1 | format=s24be | true |
 | check | helpContains | stereo | true |
 | check | helpContains | 7.1 | true |
+| check | helpContains | --q900-sink SINK_NAME | true |

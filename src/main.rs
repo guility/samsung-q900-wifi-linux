@@ -168,7 +168,7 @@ fn parse_mirror_args(args: &[String]) -> Result<MirrorArgs, String> {
         .to_owned();
     let q900_sink = options
         .value("--q900-sink")
-        .ok_or_else(|| "mirror requires --q900-sink BLUETOOTH_SINK_NAME".to_owned())?
+        .ok_or_else(|| "mirror requires --q900-sink SINK_NAME".to_owned())?
         .to_owned();
     validate_sink_token(&local_sink)?;
     validate_sink_token(&q900_sink)?;
@@ -387,19 +387,13 @@ fn run_mirror(args: MirrorArgs) -> Result<(), String> {
     let local_sink = find_pipewire_sink(&args.config.local_sink)?;
     validate_stereo_sink(&local_sink, "local output")?;
     let q900_sink = find_pipewire_sink(&args.config.q900_sink)?;
-    if !q900_sink.name.starts_with("bluez_output.") {
-        return Err(format!(
-            "Q900 output {} is not a Bluetooth sink",
-            q900_sink.name
-        ));
-    }
-    validate_stereo_sink(&q900_sink, "Q900 Bluetooth output")?;
+    validate_stereo_sink(&q900_sink, "Q900 output")?;
 
     let bus = format!("q900_stereo_{}", std::process::id());
     let plan = mirror_plan(&bus, &args.config);
     if args.dry_run {
         print_mirror_plan(&plan, &args.config);
-        println!("Q900 receives stereo over its active Bluetooth profile; this path may use SBC.");
+        print_q900_transport(&q900_sink);
         return Ok(());
     }
 
@@ -439,12 +433,11 @@ fn run_mirror(args: MirrorArgs) -> Result<(), String> {
     }
 
     println!(
-        "Mirroring all system audio as stereo to local output {} and Q900 Bluetooth output {}.",
+        "Mirroring all system audio as stereo to local output {} and Q900 output sink {}.",
         args.config.local_sink, args.config.q900_sink
     );
-    println!(
-        "PipeWire keeps the application path uncompressed; the Q900 Bluetooth link uses its active A2DP codec and may use SBC. Press Ctrl-C to restore the prior route."
-    );
+    print_q900_transport(&q900_sink);
+    println!("Press Ctrl-C to restore the prior route.");
     let wait = wait_until_stopped();
     let cleanup = session.stop();
     wait.and(cleanup)
@@ -452,6 +445,22 @@ fn run_mirror(args: MirrorArgs) -> Result<(), String> {
 
 fn validate_stereo_sink(sink: &SinkCapabilities, role: &str) -> Result<(), String> {
     validate_receiver_sink(sink, AudioLayout::Stereo).map_err(|error| format!("{role}: {error}"))
+}
+
+fn print_q900_transport(sink: &SinkCapabilities) {
+    if sink.device_api.as_deref() == Some("bluez5") || sink.name.starts_with("bluez_output.") {
+        println!("Q900 transport: Bluetooth A2DP; active codec may use SBC.");
+    } else if sink.device_api.as_deref() == Some("alsa")
+        && sink.name.to_ascii_lowercase().contains("spdif")
+    {
+        println!(
+            "Q900 transport: stereo PCM over S/PDIF; confirm the optical cable and Q900 input."
+        );
+    } else {
+        println!(
+            "Q900 transport: selected PipeWire sink; confirm its codec and physical connection."
+        );
+    }
 }
 
 fn run_sender(args: SenderArgs) -> Result<(), String> {
@@ -775,7 +784,7 @@ fn print_mirror_plan(plan: &MirrorPlan, config: &MirrorConfig) {
     print_loopback(&plan.local_output);
     println!("Local output sink: {}", config.local_sink);
     print_loopback(&plan.q900_output);
-    println!("Q900 Bluetooth sink: {}", config.q900_sink);
+    println!("Q900 output sink: {}", config.q900_sink);
 }
 
 fn print_sender_plan(plan: &q900_bridge::SenderPlan, config: &SenderConfig) {
@@ -1009,6 +1018,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge mirror --local-sink NAME --q900-sink BLUEZ_NAME [--latency-ms MS] [--local-delay-ms MS] [--q900-delay-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to a local output and the Q900 over Bluetooth; the Q900's active A2DP profile may use SBC. The sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through the selected output sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
+        "Usage:\n  q900-bridge mirror --local-sink NAME --q900-sink SINK_NAME [--latency-ms MS] [--local-delay-ms MS] [--q900-delay-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to a local output and the selected Q900 sink. Bluetooth A2DP may use SBC; an optical S/PDIF sink carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through the selected output sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
     );
 }

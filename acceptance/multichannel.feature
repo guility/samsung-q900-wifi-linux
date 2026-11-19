@@ -8,6 +8,14 @@ Feature: PipeWire RTP audio bridge
     And it does not require an RTP receiver
     And it reports that the active Q900 Bluetooth profile may use SBC
 
+  Scenario: Mirror stereo PCM to the Q900 through an optical output sink
+    Given the local output and Q900 optical sink expose stereo FL and FR
+    When the user starts mirror with the optical sink as the Q900 output
+    Then it routes system audio through a two-channel 48 kHz virtual sink
+    And it creates independent stereo loopbacks to the local output and optical sink
+    And it reports S/PDIF PCM and asks the user to confirm the cable and Q900 input
+    And it does not report a Bluetooth codec for the optical path
+
   Scenario: Send raw stereo PCM over Wi-Fi to a receiver
     Given the receiver output sink exposes stereo FL and FR
     When sender and receiver use layout stereo

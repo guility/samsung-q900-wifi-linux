@@ -93,10 +93,64 @@ fn mirror_dry_run_shows_two_stereo_outputs_and_independent_delays() {
     assert!(stdout.contains("Stereo mirror plan: 2-channel s24be/48000 Hz"));
     assert!(stdout.contains("channels=2"));
     assert!(stdout.contains("Local output sink: test_hdmi"));
-    assert!(stdout.contains("Q900 Bluetooth sink: bluez_output.q900t"));
+    assert!(stdout.contains("Q900 output sink: bluez_output.q900t"));
     assert!(stdout.contains("--delay 0.085"));
     assert!(stdout.contains("--delay 0.012"));
     assert!(stdout.contains("may use SBC"));
+}
+
+#[test]
+fn mirror_dry_run_accepts_q900_optical_stereo_pcm_sink() {
+    let output = mirror_dry_run("alsa_output.test_spdif");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Q900 output sink: alsa_output.test_spdif"));
+    assert!(stdout.contains("Q900 transport: stereo PCM over S/PDIF"));
+    assert!(!stdout.contains("may use SBC"));
+}
+
+#[test]
+fn mirror_dry_run_recognizes_bluetooth_from_pipewire_device_api() {
+    let output = mirror_dry_run("test_bluez_api");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Q900 transport: Bluetooth A2DP"));
+}
+
+#[test]
+fn mirror_dry_run_recognizes_bluetooth_from_sink_name_when_api_is_missing() {
+    let output = mirror_dry_run("bluez_output.q900t_no_api");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Q900 transport: Bluetooth A2DP"));
+}
+
+#[test]
+fn mirror_dry_run_does_not_label_every_alsa_sink_as_spdif() {
+    let output = mirror_dry_run("alsa_output.test_speaker");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Q900 transport: selected PipeWire sink"));
+    assert!(!stdout.contains("stereo PCM over S/PDIF"));
+}
+
+fn mirror_dry_run(q900_sink: &str) -> Output {
+    FakeAudioTools::new().run(&[
+        "mirror",
+        "--local-sink",
+        "test_hdmi",
+        "--q900-sink",
+        q900_sink,
+        "--dry-run",
+    ])
 }
 
 #[test]
@@ -790,7 +844,7 @@ esac
             &bin.join("pw-dump"),
             r##"#!/bin/sh
 cat <<'JSON'
-[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.test_spdif","device.api":"alsa","audio.channels":2,"audio.position":"[ FL, FR ]"}}}]
+[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.test_spdif","device.api":"alsa","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.test_speaker","device.api":"alsa","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_bluez_api","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t_no_api","audio.channels":2,"audio.position":"[ FL, FR ]"}}}]
 JSON
 "##,
         );
