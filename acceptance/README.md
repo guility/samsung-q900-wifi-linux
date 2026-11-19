@@ -1,6 +1,6 @@
 # Acceptance pipeline
 
-[`multichannel.feature`](multichannel.feature) records observable behavior in the Gherkin subset described by the Acceptance Pipeline Specification (APS). Cargo integration tests and an AgNesse Slim page execute the multichannel CLI acceptance checks. The Gherkin feature is not wired to an APS generator/runtime.
+[`multichannel.feature`](multichannel.feature) records observable stereo and multichannel behavior in the Gherkin subset described by the Acceptance Pipeline Specification (APS). Cargo integration tests and an AgNesse Slim page execute the CLI acceptance checks. The Gherkin feature is not wired to an APS generator/runtime.
 
 ## Executable checks
 
