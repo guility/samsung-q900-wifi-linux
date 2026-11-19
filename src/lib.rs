@@ -8,6 +8,7 @@ pub mod sync;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioLayout {
+    Stereo,
     Surround51,
     Surround71,
 }
@@ -24,6 +25,12 @@ const SURROUND_51_CHANNEL_MAPS: ChannelMaps = ChannelMaps {
     auxiliary: "aux0,aux1,aux2,aux3,aux4,aux5",
 };
 
+const STEREO_CHANNEL_MAPS: ChannelMaps = ChannelMaps {
+    rtp: "front-left,front-right",
+    output: "front-left,front-right",
+    auxiliary: "aux0,aux1",
+};
+
 const SURROUND_71_CHANNEL_MAPS: ChannelMaps = ChannelMaps {
     rtp: "front-left,front-right,front-center,lfe,side-left,side-right,rear-left,rear-right",
     output: "front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right",
@@ -33,6 +40,7 @@ const SURROUND_71_CHANNEL_MAPS: ChannelMaps = ChannelMaps {
 impl AudioLayout {
     pub fn channels(self) -> usize {
         match self {
+            Self::Stereo => 2,
             Self::Surround51 => 6,
             Self::Surround71 => 8,
         }
@@ -53,6 +61,7 @@ impl AudioLayout {
 
     fn channel_maps(self) -> &'static ChannelMaps {
         match self {
+            Self::Stereo => &STEREO_CHANNEL_MAPS,
             Self::Surround51 => &SURROUND_51_CHANNEL_MAPS,
             Self::Surround71 => &SURROUND_71_CHANNEL_MAPS,
         }
@@ -60,6 +69,7 @@ impl AudioLayout {
 
     pub fn pipewire_positions(self) -> &'static [&'static str] {
         match self {
+            Self::Stereo => &["FL", "FR"],
             Self::Surround51 => &["FL", "FR", "FC", "LFE", "RL", "RR"],
             Self::Surround71 => &["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"],
         }
@@ -67,6 +77,7 @@ impl AudioLayout {
 
     pub fn pipewire_rtp_channel_map(self) -> &'static str {
         match self {
+            Self::Stereo => "[ FL FR ]",
             Self::Surround51 => "[ FL FR FC LFE RL RR ]",
             Self::Surround71 => "[ FL FR FC LFE SL SR RL RR ]",
         }
@@ -78,9 +89,12 @@ impl FromStr for AudioLayout {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "stereo" => Ok(Self::Stereo),
             "5.1" => Ok(Self::Surround51),
             "7.1" => Ok(Self::Surround71),
-            _ => Err(format!("unsupported layout {value:?}; choose 5.1 or 7.1")),
+            _ => Err(format!(
+                "unsupported layout {value:?}; choose stereo, 5.1, or 7.1"
+            )),
         }
     }
 }
@@ -174,7 +188,7 @@ pub fn sender_plan(bus_sink: &str, config: &SenderConfig) -> SenderPlan {
             format!("channels={channels}"),
             format!("rate={}", config.rate),
             format!("channel_map={}", config.layout.rtp_channel_map()),
-            "sink_properties=device.description=Q900_Bridge_Multichannel".to_owned(),
+            "sink_properties=device.description=Q900_Bridge_RTP_Source".to_owned(),
         ],
     };
     let mut rtp_sender_args = vec![
@@ -346,7 +360,8 @@ fn matches_positions(sink: &SinkCapabilities, expected: &[&str]) -> bool {
 
 pub fn has_auxiliary_channel_map(sink: &SinkCapabilities, layout: AudioLayout) -> bool {
     let channels = layout.channels();
-    sink.positions.len() >= channels
+    channels > 2
+        && sink.positions.len() >= channels
         && sink.positions[..channels]
             .iter()
             .enumerate()
@@ -514,6 +529,7 @@ fn parse_positions(value: &Value) -> Option<Vec<String>> {
 impl std::fmt::Display for AudioLayout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Stereo => "stereo",
             Self::Surround51 => "5.1",
             Self::Surround71 => "7.1",
         })

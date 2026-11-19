@@ -39,7 +39,7 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("7.1-channel s24be/48000 Hz RTP"));
+    assert!(stdout.contains("7.1 (8 channels) s24be/48000 Hz RTP"));
     assert!(stdout.contains("channels=8"));
     assert!(stdout.contains("side-left,side-right,rear-left,rear-right"));
     assert!(stdout.contains("pw-loopback"));
@@ -47,6 +47,25 @@ fn sender_dry_run_shows_eight_channel_pcm_plan() {
     assert!(stdout.contains("--capture-props {\"stream.capture.sink\":true}"));
     assert!(stdout.contains("--channel-map [ FL FR FC LFE SL SR RL RR ]"));
     assert!(!stdout.contains("source_ip="));
+}
+
+#[test]
+fn sender_dry_run_sends_stereo_pcm_over_rtp() {
+    let output = run_cli(&[
+        "sender",
+        "--layout",
+        "stereo",
+        "--local-sink",
+        "alsa_output.test",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("stereo (2 channels) s24be/48000 Hz RTP"));
+    assert!(stdout.contains("channels=2"));
+    assert!(stdout.contains("channel_map=front-left,front-right"));
+    assert!(stdout.contains("--channel-map [ FL FR ]"));
 }
 
 #[test]
@@ -168,6 +187,36 @@ fn receiver_dry_run_applies_fixed_output_delay() {
 }
 
 #[test]
+fn receiver_dry_run_routes_stereo_rtp_to_an_optical_output() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "receiver",
+        "--sink",
+        "alsa_output.test_spdif",
+        "--layout",
+        "stereo",
+        "--output-delay-ms",
+        "25",
+        "--dry-run",
+    ]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Receiver plan: RTP sink"));
+    assert!(stdout.contains("module-rtp-recv"));
+    assert!(stdout.contains("alsa_output.test_spdif"));
+    assert!(
+        stdout
+            .contains("Selected sink alsa_output.test_spdif currently exposes 2 channels: FL, FR")
+    );
+    assert!(stdout.contains("--delay 0.025"));
+}
+
+#[test]
 fn lpcm_check_dry_run_lists_51_channels_without_changing_default_routes() {
     let tools = FakeAudioTools::new();
     let output = tools.run(&[
@@ -181,10 +230,34 @@ fn lpcm_check_dry_run_lists_51_channels_without_changing_default_routes() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("5.1-channel 24-bit/48 kHz test tones"));
+    assert!(stdout.contains("5.1 (6 channels) 24-bit/48 kHz test tones"));
     assert!(stdout.contains("FL (front left, 440 Hz)"));
     assert!(stdout.contains("LFE (subwoofer/LFE, 80 Hz)"));
     assert!(stdout.contains("The default sink and existing application routes are not changed."));
+    assert!(!tools.log_file.exists());
+    assert!(!tools.loopback_pid_file.exists());
+}
+
+#[test]
+fn lpcm_check_dry_run_lists_stereo_tones_for_an_optical_output() {
+    let tools = FakeAudioTools::new();
+    let output = tools.run(&[
+        "lpcm-check",
+        "--sink",
+        "alsa_output.test_spdif",
+        "--layout",
+        "stereo",
+        "--dry-run",
+    ]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("stereo (2 channels) 24-bit/48 kHz test tones"));
+    assert!(stdout.contains("FL (front left, 440 Hz)"));
+    assert!(stdout.contains("FR (front right, 520 Hz)"));
+    assert!(stdout.contains("channel 1/2: FL (front left, 440 Hz)"));
+    assert!(stdout.contains("channel 2/2: FR (front right, 520 Hz)"));
+    assert!(stdout.contains("--delay 0.000"));
     assert!(!tools.log_file.exists());
     assert!(!tools.loopback_pid_file.exists());
 }
@@ -228,6 +301,9 @@ fn lpcm_check_plays_native_24_bit_pcm_and_restores_temporary_pipewire_nodes() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("1/6: FL (front left, 440 Hz)"));
+    assert!(stdout.contains("6/6: RR (rear right, 760 Hz)"));
     let playback_args = fs::read_to_string(&tools.pw_cat_log_file).unwrap();
     assert!(playback_args.contains("--playback --raw --target q900_lpcm_test_"));
     assert!(playback_args.contains("--rate 48000 --channels 6"));
@@ -246,6 +322,20 @@ fn lpcm_check_plays_native_24_bit_pcm_and_restores_temporary_pipewire_nodes() {
         "original\n"
     );
     assert_loopback_process_stopped(&tools.loopback_pid_file);
+}
+
+#[test]
+fn lpcm_check_stops_before_playback_when_interrupted_during_startup() {
+    let tools = FakeAudioTools::new();
+    let mut child = tools.launch(&["lpcm-check", "--sink", "test_hdmi", "--layout", "stereo"]);
+    wait_for_log(&tools.log_file, "load-module module-null-sink");
+    let loopback_pids = wait_for_line_count(&tools.loopback_pid_file, 1);
+    stop_with_sigint(&mut child);
+
+    assert!(!tools.pw_cat_log_file.exists());
+    let log = fs::read_to_string(&tools.log_file).unwrap();
+    assert!(log.contains("unload-module 100"));
+    assert_loopback_pids_stopped(&loopback_pids);
 }
 
 #[test]
@@ -331,12 +421,12 @@ fn sender_refuses_bluetooth_sink_that_may_use_sbc() {
 }
 
 #[test]
-fn sender_rejects_unrequested_stereo_layout() {
-    let output = run_cli(&["sender", "--layout", "stereo", "--dry-run"]);
+fn sender_rejects_unsupported_layout() {
+    let output = run_cli(&["sender", "--layout", "5.1.2", "--dry-run"]);
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("choose 5.1 or 7.1"));
+    assert!(stderr.contains("choose stereo, 5.1, or 7.1"));
 }
 
 #[test]
@@ -700,7 +790,7 @@ esac
             &bin.join("pw-dump"),
             r##"#!/bin/sh
 cat <<'JSON'
-[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}}]
+[{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"test_hdmi","audio.channels":6,"audio.position":"[ FL, FR, FC, LFE, RL, RR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"bluez_output.q900t","device.api":"bluez5","audio.channels":2,"audio.position":"[ FL, FR ]"}}},{"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.test_spdif","device.api":"alsa","audio.channels":2,"audio.position":"[ FL, FR ]"}}}]
 JSON
 "##,
         );

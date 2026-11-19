@@ -8,9 +8,9 @@
 (defn run-bridge [& args]
   (apply shell/sh bridge-binary args))
 
-(describe "Q900 Bridge multichannel CLI acceptance"
-  (it "plans uncompressed 24-bit 5.1 and 7.1 PCM"
-    (doseq [[layout channels] [["5.1" 6] ["7.1" 8]]]
+(describe "Q900 Bridge CLI acceptance"
+  (it "plans uncompressed 24-bit stereo, 5.1, and 7.1 PCM"
+    (doseq [[layout channels] [["stereo" 2] ["5.1" 6] ["7.1" 8]]]
       (let [{:keys [exit out err]} (run-bridge "sender"
                                                  "--layout" layout
                                                  "--destination-ip" "239.0.0.56"
@@ -24,4 +24,5 @@
   (it "documents 7.1 support in the command help"
     (let [{:keys [exit out]} (run-bridge "--help")]
       (should= 0 exit)
+      (should-contain "stereo" out)
       (should-contain "7.1" out))))

@@ -34,6 +34,17 @@ const TONES_51: [ChannelTone; 6] = [
     },
 ];
 
+const TONES_STEREO: [ChannelTone; 2] = [
+    ChannelTone {
+        channel: "FL",
+        frequency_hz: 440,
+    },
+    ChannelTone {
+        channel: "FR",
+        frequency_hz: 520,
+    },
+];
+
 const TONES_71: [ChannelTone; 8] = [
     TONES_51[0],
     TONES_51[1],
@@ -53,6 +64,7 @@ const TONES_71: [ChannelTone; 8] = [
 
 pub fn channel_tones(layout: AudioLayout) -> &'static [ChannelTone] {
     match layout {
+        AudioLayout::Stereo => &TONES_STEREO,
         AudioLayout::Surround51 => &TONES_51,
         AudioLayout::Surround71 => &TONES_71,
     }

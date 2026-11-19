@@ -1,4 +1,4 @@
-Feature: Multichannel RTP audio bridge
+Feature: PipeWire RTP audio bridge
 
   Scenario: Mirror stereo system audio to the Q900 over Bluetooth
     Given the local output and Q900 Bluetooth sink expose stereo FL and FR
@@ -7,6 +7,14 @@ Feature: Multichannel RTP audio bridge
     And it creates independent stereo loopbacks to the local output and Q900
     And it does not require an RTP receiver
     And it reports that the active Q900 Bluetooth profile may use SBC
+
+  Scenario: Send raw stereo PCM over Wi-Fi to a receiver
+    Given the receiver output sink exposes stereo FL and FR
+    When sender and receiver use layout stereo
+    Then the sender advertises a two-channel 24-bit 48 kHz RTP stream
+    And the sender keeps the local stereo output active
+    And the receiver routes RTP to its selected stereo output sink
+    And the RTP path does not use the Q900 Bluetooth codec
 
   Scenario: Send 5.1 PCM without using Bluetooth
     Given the sender has a non-Bluetooth local audio sink

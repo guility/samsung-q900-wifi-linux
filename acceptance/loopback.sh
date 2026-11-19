@@ -4,6 +4,14 @@ set -euo pipefail
 layout="${1:-5.1}"
 source_ip="${2:-}"
 case "$layout" in
+  stereo)
+    channels=2
+    channel_map="FL,FR"
+    sink_channel_map="front-left,front-right"
+    capture_channel_map="FL,FR"
+    receive_port="receive_AUX1"
+    sink_port="playback_FL"
+    ;;
   5.1)
     channels=6
     channel_map="5.1"
@@ -21,12 +29,12 @@ case "$layout" in
     sink_port="playback_AUX0"
     ;;
   *)
-    echo "usage: $0 [5.1|7.1] [SOURCE_IP]" >&2
+    echo "usage: $0 [stereo|5.1|7.1] [SOURCE_IP]" >&2
     exit 2
     ;;
 esac
 if [[ "$#" -gt 2 ]]; then
-  echo "usage: $0 [5.1|7.1] [SOURCE_IP]" >&2
+  echo "usage: $0 [stereo|5.1|7.1] [SOURCE_IP]" >&2
   exit 2
 fi
 

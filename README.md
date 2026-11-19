@@ -1,8 +1,8 @@
 # Samsung Q900T synchronized Linux audio
 
-An experimental Rust bridge that routes Linux system audio to a PipeWire virtual sink, mirrors it to a local output, and sends uncompressed multichannel PCM over RTP/Wi-Fi. The sender supports 5.1 (6 channels) and 7.1 (8 channels), using 24-bit/48 kHz PCM. This avoids Bluetooth audio codecs such as SBC on the bridge path.
+An experimental Rust bridge that routes Linux system audio to a PipeWire virtual sink, mirrors it to a local output, and sends uncompressed PCM over RTP/Wi-Fi. The sender supports stereo (2 channels), 5.1 (6 channels), and 7.1 (8 channels), using 24-bit/48 kHz PCM. This avoids Bluetooth audio codecs such as SBC on the RTP bridge path.
 
-The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 6.912 Mbit/s for 5.1 and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The current same-host loopback confirms channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
+The wireless leg uses raw linear PCM rather than a lossy audio codec, so it preserves the decoded audio samples and discrete channels. Its audio payload is 2.304 Mbit/s for stereo, 6.912 Mbit/s for 5.1, and 9.216 Mbit/s for 7.1, before RTP/UDP/IP overhead. The same-host loopback checks channel preservation; sustained delivery across two Wi-Fi hosts still needs acceptance testing.
 
 The bridge's multichannel requirement is discrete 5.1 or 7.1 PCM (six or eight input channels). Samsung's 7.1.2 label describes the Q900T speaker configuration; it does not by itself confirm that HDMI accepts discrete 7.1.2 LPCM. This MVP does not claim independent height-channel input.
 
@@ -13,7 +13,7 @@ The destination and open product decisions are tracked in the [Wayfinder map](ht
 - Linux with PipeWire, its PulseAudio compatibility server (`pactl`), and the `pw-loopback` client.
 - IPv4 multicast enabled on the Wi-Fi LAN. The default RTP/SAP address is `224.0.0.56`, with RTP port `5004`.
 - On hosts with multiple network interfaces, pass `--source-ip` with the IPv4 address assigned to Wi-Fi (for example, find it with `ip -4 addr show dev wlan0`). If omitted, the system routing table chooses the outbound interface. PipeWire's RTP sender supports this source address setting ([module-rtp-send](https://pipewire.pages.freedesktop.org/pipewire/page_pulse_module_rtp_send.html)).
-- The receiver must expose an active PipeWire sink with the requested channel count. Standard HDMI profiles must report the expected speaker positions. For a Pro Audio sink with `AUX0…AUX7` positions, the matching HDMI card port must also report connected; a Pro Audio profile alone does not prove an HDMI device is present.
+- The receiver must expose an active PipeWire sink with the requested channel count. Stereo RTP requires ordered `FL`/`FR` positions; it can target a stereo S/PDIF sink if a receiver has one. Multichannel HDMI profiles must report the expected speaker positions. For a Pro Audio sink with `AUX0…AUX7` positions, the matching HDMI card port must also report connected; a Pro Audio profile alone does not prove an HDMI device is present.
 - To connect the multichannel receiver to a Q900T, HDMI must negotiate 5.1/7.1 LPCM; that has not yet been verified on the available hardware. Samsung lists `SBC` as the Q900T Bluetooth codec and describes Wi-Fi as “Wi-Fi TV Connection” for compatible Samsung TVs. It also lists Spotify Connect, which Spotify documents as playback of Spotify content selected from its app, not as a generic Linux system-audio input; the sources do not specify multichannel mapping or latency for that feature. The host exposes Q900T over two-channel A2DP with `SBC` and `SBC-XQ` profiles. The multichannel RTP sender rejects that Bluetooth sink; the separate `mirror` command can duplicate stereo to it, but its active A2DP profile may use SBC and therefore does not meet the above-SBC quality requirement. Samsung's specification sheet lists HDMI inputs and Dolby/DTS decoders but does not confirm discrete 5.1/7.1 LPCM, so the multichannel receiver path remains conditional on hardware testing ([Q900T product specifications](https://www.samsung.com/au/audio-devices/soundbar/7-1-2-ch-soundbar-dolby-atmos-black-hw-q900t-xy/), [Spotify Connect docs](https://support.spotify.com/us/article/spotify-connect/), [official specification sheet](https://image-us.samsung.com/SamsungUS/samsung/us/tvs/HW-Q900T_Soundbar_Spec_Sheet_Final_Files.pdf)). Current discovery results and the limits of that inference are in [`research/q900t-wifi-endpoints.md`](research/q900t-wifi-endpoints.md).
 
 ## Stereo Bluetooth mirror
@@ -27,7 +27,23 @@ cargo run -- mirror \
   --dry-run
 ```
 
-Remove `--dry-run` to start routing. The command creates a two-channel virtual sink, moves existing PulseAudio-compatible streams to it, and fans out to both outputs. Ctrl-C restores the previous default sink and stream routes. The Q900 link uses its active A2DP profile, which is SBC on this host; this mode is a stereo routing and calibration baseline, not a high-quality Bluetooth result. Set `--local-delay-ms` or `--q900-delay-ms` from acoustic measurements to compensate a fixed offset. The higher-quality, discrete 5.1/7.1 target remains the Wi-Fi RTP-to-HDMI path.
+Remove `--dry-run` to start routing. The command creates a two-channel virtual sink, moves existing PulseAudio-compatible streams to it, and fans out to both outputs. Ctrl-C restores the previous default sink and stream routes. The Q900 link uses its active A2DP profile, which is SBC on this host; this mode is a stereo routing and calibration baseline, not a high-quality Bluetooth result. Set `--local-delay-ms` or `--q900-delay-ms` from acoustic measurements to compensate a fixed offset. The higher-quality 5.1/7.1 Q900T path remains unverified; see [issue #12](https://github.com/guility/samsung-q900-wifi-linux/issues/12).
+
+## Stereo RTP over Wi-Fi
+
+Use `--layout stereo` on both RTP endpoints to send raw 24-bit stereo PCM without the Q900's A2DP codec:
+
+```sh
+# Source host
+cargo run -- sender --layout stereo \
+  --destination-ip 224.0.0.56 \
+  --local-sink YOUR_LOCAL_STEREO_SINK
+
+# Linux receiver with a stereo output (for example, an optical S/PDIF sink)
+cargo run -- receiver --layout stereo --sink YOUR_RECEIVER_STEREO_SINK
+```
+
+If the receiver's optical output is connected to the Q900T, the host-to-receiver leg stays wireless and the final receiver-to-soundbar leg is wired. This is a candidate stereo route only: the current host exposes a USB S/PDIF sink as 16-bit/48 kHz stereo, but its physical port availability and connection to Q900T have not been verified. A separate Wi-Fi receiver and optical cable may be needed; the user has not yet decided whether that hardware is in scope in [issue #14](https://github.com/guility/samsung-q900-wifi-linux/issues/14). No Q900T playback or acoustic synchronization result is claimed.
 
 ## Build and inspect
 
@@ -55,6 +71,7 @@ Run an end-to-end software loopback through PipeWire's RTP modules without a sou
 ```sh
 bash acceptance/loopback.sh 5.1
 bash acceptance/loopback.sh 7.1
+bash acceptance/loopback.sh stereo
 ```
 
 The loopback script creates temporary virtual sinks, sends a distinct tone on every channel, records the receiver sink, checks that each channel contains audio, and cleans up the sinks and routes.

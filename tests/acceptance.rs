@@ -9,16 +9,31 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 #[test]
-fn accepts_only_explicit_51_and_71_layouts() {
+fn accepts_stereo_and_explicit_51_and_71_layouts() {
+    assert_eq!(AudioLayout::from_str("stereo").unwrap().channels(), 2);
     assert_eq!(AudioLayout::from_str("5.1").unwrap().channels(), 6);
     assert_eq!(AudioLayout::from_str("7.1").unwrap().channels(), 8);
-    assert!(AudioLayout::from_str("stereo").is_err());
     assert!(AudioLayout::from_str("5.1.2").is_err());
 }
 
 #[test]
+fn stereo_layout_uses_front_left_and_front_right_for_rtp_and_output() {
+    let stereo = AudioLayout::from_str("stereo").unwrap();
+
+    assert_eq!(stereo.rtp_channel_map(), "front-left,front-right");
+    assert_eq!(stereo.output_channel_map(), "front-left,front-right");
+    assert_eq!(stereo.pipewire_positions(), &["FL", "FR"]);
+    assert_eq!(stereo.pipewire_rtp_channel_map(), "[ FL FR ]");
+    assert_eq!(stereo.to_string(), "stereo");
+}
+
+#[test]
 fn lpcm_channel_tones_are_separate_and_use_24_bit_native_endian_samples() {
-    for layout in [AudioLayout::Surround51, AudioLayout::Surround71] {
+    for layout in [
+        AudioLayout::Stereo,
+        AudioLayout::Surround51,
+        AudioLayout::Surround71,
+    ] {
         let channels = layout.channels();
         let tone_frames = 200 * 48;
         let gap_frames = 10 * 48;
@@ -166,6 +181,36 @@ fn sender_plan_preserves_multichannel_pcm_and_mirrors_to_host_sink() {
         "[ FL FR FC LFE SL SR RL RR ]"
     );
     assert_eq!(plan.local_mirror.latency_ms, 80);
+    assert_eq!(plan.local_mirror.delay_ms, 37);
+}
+
+#[test]
+fn sender_plan_sends_stereo_pcm_and_mirrors_to_host_sink() {
+    let config = SenderConfig {
+        layout: AudioLayout::Stereo,
+        destination: Ipv4Addr::new(239, 10, 20, 30),
+        source_ip: None,
+        port: 5004,
+        rate: 48_000,
+        local_sink: "alsa_output.test".to_owned(),
+        latency_ms: 80,
+        local_delay_ms: 37,
+    };
+
+    let plan = sender_plan("q900_bridge_stereo_test", &config);
+
+    assert_eq!(plan.modules.len(), 2);
+    assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=2"));
+    assert!(
+        plan.modules[0]
+            .args
+            .iter()
+            .any(|arg| arg == "channel_map=front-left,front-right")
+    );
+    assert!(plan.modules[1].args.iter().any(|arg| arg == "channels=2"));
+    assert!(plan.modules[1].args.iter().any(|arg| arg == "format=s24be"));
+    assert_eq!(plan.local_mirror.channels, 2);
+    assert_eq!(plan.local_mirror.channel_map, "[ FL FR ]");
     assert_eq!(plan.local_mirror.delay_ms, 37);
 }
 
@@ -320,6 +365,70 @@ fn receiver_rejects_stereo_sink_for_multichannel_layout() {
 
     assert!(validate_receiver_sink(&stereo, AudioLayout::Surround51).is_err());
     assert!(validate_receiver_sink(&stereo, AudioLayout::Surround71).is_err());
+}
+
+#[test]
+fn receiver_routes_stereo_rtp_to_an_optical_stereo_sink() {
+    let optical = SinkCapabilities {
+        name: "alsa_output.usb.test_spdif".to_owned(),
+        channels: 2,
+        positions: vec!["FL".to_owned(), "FR".to_owned()],
+        ..SinkCapabilities::default()
+    };
+    let config = ReceiverConfig {
+        layout: AudioLayout::Stereo,
+        sink: optical.name.clone(),
+        latency_ms: 100,
+        output_delay_ms: 25,
+    };
+
+    assert!(validate_receiver_sink(&optical, AudioLayout::Stereo).is_ok());
+    assert!(!has_auxiliary_channel_map(&optical, AudioLayout::Stereo));
+    let plan = receiver_plan(&config, "q900_rtp_rx_stereo", &optical);
+
+    assert_eq!(plan.output_sink, optical.name);
+    assert_eq!(plan.modules.len(), 2);
+    assert!(plan.modules[0].args.iter().any(|arg| arg == "channels=2"));
+    assert!(
+        plan.modules[1]
+            .args
+            .iter()
+            .any(|arg| arg == "sink=q900_rtp_rx_stereo")
+    );
+    assert_eq!(plan.output_loopback.channels, 2);
+    assert_eq!(plan.output_loopback.playback, "alsa_output.usb.test_spdif");
+    assert_eq!(plan.output_loopback.channel_map, "[ FL FR ]");
+    assert_eq!(plan.output_loopback.delay_ms, 25);
+}
+
+#[test]
+fn receiver_rejects_stereo_aux_map_instead_of_treating_it_as_hdmi() {
+    let auxiliary_stereo = SinkCapabilities {
+        name: "alsa_output.pro_audio_stereo".to_owned(),
+        channels: 2,
+        positions: vec!["AUX0".to_owned(), "AUX1".to_owned()],
+        ..SinkCapabilities::default()
+    };
+
+    assert!(!has_auxiliary_channel_map(
+        &auxiliary_stereo,
+        AudioLayout::Stereo
+    ));
+    assert!(validate_receiver_sink(&auxiliary_stereo, AudioLayout::Stereo).is_err());
+}
+
+#[test]
+fn receiver_rejects_stereo_with_wrong_left_or_right_position() {
+    for positions in [vec!["FR", "FL"], vec!["FL", "FC"]] {
+        let sink = SinkCapabilities {
+            name: "alsa_output.misordered_stereo".to_owned(),
+            channels: 2,
+            positions: positions.into_iter().map(str::to_owned).collect(),
+            ..SinkCapabilities::default()
+        };
+
+        assert!(validate_receiver_sink(&sink, AudioLayout::Stereo).is_err());
+    }
 }
 
 #[test]

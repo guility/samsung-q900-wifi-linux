@@ -451,18 +451,7 @@ fn run_mirror(args: MirrorArgs) -> Result<(), String> {
 }
 
 fn validate_stereo_sink(sink: &SinkCapabilities, role: &str) -> Result<(), String> {
-    if sink.channels < 2
-        || sink.positions.first().map(String::as_str) != Some("FL")
-        || sink.positions.get(1).map(String::as_str) != Some("FR")
-    {
-        return Err(format!(
-            "{role} {} must expose at least stereo FL/FR channels; found {} channel(s) with [{}]",
-            sink.name,
-            sink.channels,
-            sink.positions.join(", ")
-        ));
-    }
-    Ok(())
+    validate_receiver_sink(sink, AudioLayout::Stereo).map_err(|error| format!("{role}: {error}"))
 }
 
 fn run_sender(args: SenderArgs) -> Result<(), String> {
@@ -514,8 +503,9 @@ fn run_sender(args: SenderArgs) -> Result<(), String> {
     }
 
     println!(
-        "Sending {}-channel 24-bit/48 kHz PCM via RTP to {}:{}; local mirror: {} with {} ms added delay.",
+        "Sending {} ({} channels) 24-bit/48 kHz PCM via RTP to {}:{}; local mirror: {} with {} ms added delay.",
         args.config.layout,
+        args.config.layout.channels(),
         args.config.destination,
         args.config.port,
         args.config.local_sink,
@@ -531,7 +521,7 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
     let sink = find_pipewire_sink(&args.config.sink)?;
     validate_receiver_sink(&sink, args.config.layout).map_err(|error| {
         format!(
-            "{error}. Select an active HDMI profile that exposes the requested channels, then recheck with `pw-dump`."
+            "{error}. Select an active output sink that exposes the requested channel positions, then recheck with `pw-dump`."
         )
     })?;
     if has_auxiliary_channel_map(&sink, args.config.layout) {
@@ -567,9 +557,10 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
         }
     };
     println!(
-        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} (HDMI sink {}, {} ms buffer, {} ms added delay). Press Ctrl-C to stop.",
+        "Listening for PipeWire RTP sessions on {} and mapping {} ({} channels) to output {} (sink {}, {} ms buffer, {} ms added delay). Press Ctrl-C to stop.",
         plan.rtp_sink,
         args.config.layout,
+        args.config.layout.channels(),
         plan.output_sink,
         sink.name,
         args.config.latency_ms,
@@ -585,7 +576,7 @@ fn run_lpcm_check(args: LpcmCheckArgs) -> Result<(), String> {
     let sink = find_pipewire_sink(&args.sink)?;
     validate_receiver_sink(&sink, args.layout).map_err(|error| {
         format!(
-            "{error}. Select an active HDMI sink that exposes the requested channels, then recheck with `pw-dump`."
+            "{error}. Select an active output sink that exposes the requested channel positions, then recheck with `pw-dump`."
         )
     })?;
     if has_auxiliary_channel_map(&sink, args.layout) {
@@ -646,8 +637,10 @@ fn print_lpcm_check_plan(
     output_loopback: &LoopbackSpec,
 ) {
     println!(
-        "LPCM check plan: {}-channel 24-bit/48 kHz test tones to {}.",
-        args.layout, sink.name
+        "PCM check plan: {} ({} channels) 24-bit/48 kHz test tones to {}.",
+        args.layout,
+        args.layout.channels(),
+        sink.name
     );
     println!(
         "Each channel is played alone at low level for {} ms, followed by {} ms of silence.",
@@ -680,8 +673,10 @@ fn play_lpcm_channel_test(args: &LpcmCheckArgs, test_sink: &str) -> Result<(), S
         .join(",");
     let channels = args.layout.channels().to_string();
     println!(
-        "Playing {}-channel LPCM test tones to {} in this order:",
-        args.layout, args.sink
+        "Playing {} ({} channels) PCM test tones to {} in this order:",
+        args.layout,
+        args.layout.channels(),
+        args.sink
     );
     for (index, tone) in channel_tones(args.layout).iter().enumerate() {
         println!(
@@ -785,8 +780,12 @@ fn print_mirror_plan(plan: &MirrorPlan, config: &MirrorConfig) {
 
 fn print_sender_plan(plan: &q900_bridge::SenderPlan, config: &SenderConfig) {
     println!(
-        "Sender plan: {}-channel s24be/{} Hz RTP to {}:{}",
-        config.layout, config.rate, config.destination, config.port
+        "Sender plan: {} ({} channels) s24be/{} Hz RTP to {}:{}",
+        config.layout,
+        config.layout.channels(),
+        config.rate,
+        config.destination,
+        config.port
     );
     if let Some(source_ip) = config.source_ip {
         println!("RTP source address: {source_ip}");
@@ -1010,6 +1009,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge mirror --local-sink NAME --q900-sink BLUEZ_NAME [--latency-ms MS] [--local-delay-ms MS] [--q900-delay-ms MS] [--dry-run]\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout 5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to a local output and the Q900 over Bluetooth; the Q900's active A2DP profile may use SBC. The sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through an active HDMI sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
+        "Usage:\n  q900-bridge mirror --local-sink NAME --q900-sink BLUEZ_NAME [--latency-ms MS] [--local-delay-ms MS] [--q900-delay-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to a local output and the Q900 over Bluetooth; the Q900's active A2DP profile may use SBC. The sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through the selected output sink. Delay options apply a fixed acoustic offset; they do not compensate clock drift."
     );
 }
