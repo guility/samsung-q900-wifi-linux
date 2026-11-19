@@ -13,6 +13,25 @@ Feature: Multichannel RTP audio bridge
     Then it loads the RTP receiver for that HDMI sink
     And it accepts an eight-channel RTP stream
 
+  Scenario Outline: Map Pro Audio AUX channels to HDMI speaker positions
+    Given the receiver Pro Audio sink exposes <channels> channels named in order from AUX0
+    And its associated HDMI port is reported connected
+    When the receiver starts with layout <layout>
+    Then it maps RTP channels to the standard HDMI positions <positions>
+    And it preserves all <channels> channels without downmixing
+
+    Examples:
+      | layout | channels | positions                                                        |
+      | 5.1    | 6        | front-left,front-right,front-center,lfe,rear-left,rear-right     |
+      | 7.1    | 8        | front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right |
+
+  Scenario: Refuse Pro Audio AUX playback when HDMI is not connected
+    Given the receiver Pro Audio sink exposes the requested AUX channels
+    And its associated HDMI port is not reported connected
+    When the receiver starts with a multichannel layout
+    Then it reports that the HDMI route is unavailable
+    And it does not load an RTP receiver module
+
   Scenario: Reject a stereo receiver sink
     Given the receiver HDMI sink exposes only two channels
     When the receiver starts with layout 5.1

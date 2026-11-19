@@ -1,6 +1,7 @@
 use q900_bridge::{
-    AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities, parse_pipewire_sinks,
-    receiver_plan, sender_plan, validate_receiver_sink,
+    AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
+    has_auxiliary_channel_map, parse_pipewire_sinks, receiver_plan, sender_plan,
+    validate_aux_hdmi_route, validate_receiver_sink,
 };
 use std::collections::HashMap;
 use std::env;
@@ -258,15 +259,19 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
     let sink = find_pipewire_sink(&args.config.sink)?;
     validate_receiver_sink(&sink, args.config.layout).map_err(|error| {
         format!(
-            "{error}. Set the HDMI card to its Pro Audio profile (if available), then recheck with `pw-dump`."
+            "{error}. Select an active HDMI profile that exposes the requested channels, then recheck with `pw-dump`."
         )
     })?;
+    if has_auxiliary_channel_map(&sink, args.config.layout) {
+        let cards = pactl_output(&["list", "cards"])?;
+        validate_aux_hdmi_route(&sink, &cards)?;
+    }
     let rtp_sink = format!("q900_rtp_rx_{}", std::process::id());
-    let plan = receiver_plan(&args.config, &rtp_sink);
+    let plan = receiver_plan(&args.config, &rtp_sink, &sink);
     if args.dry_run {
         println!(
-            "Receiver plan: RTP sink {} -> output {}.",
-            plan.rtp_sink, sink.name
+            "Receiver plan: RTP sink {} -> output {} -> {}.",
+            plan.rtp_sink, sink.name, plan.output_sink
         );
         for spec in &plan.modules {
             println!("  {} {}", spec.name, spec.args.join(" "));
@@ -282,8 +287,8 @@ fn run_receiver(args: ReceiverArgs) -> Result<(), String> {
 
     let ids = load_modules(&plan.modules)?;
     println!(
-        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} ({} ms buffer). Press Ctrl-C to stop.",
-        plan.rtp_sink, args.config.layout, sink.name, args.config.latency_ms
+        "Listening for PipeWire RTP sessions on {} and mapping {} channels to {} (HDMI sink {}, {} ms buffer). Press Ctrl-C to stop.",
+        plan.rtp_sink, args.config.layout, plan.output_sink, sink.name, args.config.latency_ms
     );
     let wait = wait_until_stopped();
     let cleanup = unload_modules(&ids);

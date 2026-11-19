@@ -51,6 +51,47 @@ fn sender_rejects_unrequested_stereo_layout() {
 }
 
 #[test]
+fn sender_rejects_zero_udp_port() {
+    let output = run_cli(&[
+        "sender",
+        "--port",
+        "0",
+        "--local-sink",
+        "alsa_output.test",
+        "--dry-run",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("UDP port must be between 1 and 65535"));
+}
+
+#[test]
+fn sender_rejects_zero_latency() {
+    let output = run_cli(&[
+        "sender",
+        "--latency-ms",
+        "0",
+        "--local-sink",
+        "alsa_output.test",
+        "--dry-run",
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("latency must be between 1 and 2000 ms"));
+}
+
+#[test]
+fn sender_rejects_invalid_local_sink_name() {
+    let output = run_cli(&["sender", "--local-sink", "alsa output.test", "--dry-run"]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("invalid PipeWire sink name"));
+}
+
+#[test]
 fn receiver_requires_an_explicit_output_sink() {
     let output = run_cli(&["receiver", "--dry-run"]);
 

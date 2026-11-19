@@ -6,14 +6,18 @@ case "$layout" in
   5.1)
     channels=6
     channel_map="5.1"
-    pa_channel_map="front-left,front-right,front-center,lfe,rear-left,rear-right"
+    sink_channel_map="aux0,aux1,aux2,aux3,aux4,aux5"
+    capture_channel_map="AUX0,AUX1,AUX2,AUX3,AUX4,AUX5"
     receive_port="receive_AUX6"
+    sink_port="playback_AUX0"
     ;;
   7.1)
     channels=8
     channel_map="7.1"
-    pa_channel_map="front-left,front-right,front-center,lfe,rear-left,rear-right,side-left,side-right"
+    sink_channel_map="aux0,aux1,aux2,aux3,aux4,aux5,aux6,aux7"
+    capture_channel_map="AUX0,AUX1,AUX2,AUX3,AUX4,AUX5,AUX6,AUX7"
     receive_port="receive_AUX8"
+    sink_port="playback_AUX0"
     ;;
   *)
     echo "usage: $0 [5.1|7.1]" >&2
@@ -66,7 +70,7 @@ trap 'exit 130' INT TERM
 cargo build --manifest-path "$repo_root/Cargo.toml" --quiet
 rx_module="$(pactl load-module module-null-sink \
   "sink_name=$rx_sink" format=s24be "channels=$channels" rate=48000 \
-  "channel_map=$pa_channel_map" "sink_properties=device.description=Q900_Acceptance_Receiver")"
+  "channel_map=$sink_channel_map" "sink_properties=device.description=Q900_Acceptance_Receiver")"
 local_module="$(pactl load-module module-null-sink \
   "sink_name=$local_sink" format=s24be channels=2 rate=48000 \
   channel_map=front-left,front-right sink_properties=device.description=Q900_Acceptance_Local)"
@@ -88,9 +92,9 @@ for ((attempt = 0; attempt < 50; attempt++)); do
     cat "$work_dir/receiver.log" "$work_dir/sender.log" >&2
     exit 1
   fi
-  if pw-link -l | grep -F "$rx_sink:playback_FL" >/dev/null \
+  if pw-link -l | grep -F "$rx_sink:$sink_port" >/dev/null \
       && pw-link -l | grep -F "Q900_Bridge:$receive_port" >/dev/null \
-      && pw-link -l | grep -F -- "|-> $rx_sink:playback_FL" >/dev/null; then
+      && pw-link -l | grep -F -- "|-> $rx_sink:$sink_port" >/dev/null; then
     connected=true
     break
   fi
@@ -124,7 +128,7 @@ if [[ -z "$monitor_id" ]]; then
 fi
 
 pw-cat --record --raw --target "$monitor_id" --rate 48000 \
-  --channels "$channels" --channel-map "$channel_map" --format s32 \
+  --channels "$channels" --channel-map "$capture_channel_map" --format s32 \
   "$capture_file" >"$work_dir/record.log" 2>&1 &
 record_pid=$!
 sleep 0.3
