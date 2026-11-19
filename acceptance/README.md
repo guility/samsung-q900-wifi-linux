@@ -30,4 +30,14 @@ cargo llvm-cov --workspace --all-targets --lcov --output-path target/coverage/ru
 crapper --root . --changed --use-existing-coverage
 ```
 
-SCRAP analyzes Speclj/Clojure specs rather than Rust or Gherkin, so it does not assess the Cargo tests. AgNesse needs a separate Rust Slim fixture process. APS needs a Rust generator/runtime/step adapter before it can execute the feature file. Those adapters are not part of this transport prototype, and the related tools are not represented as passing checks.
+SCRAP analyzes Speclj/Clojure specs rather than Rust or Gherkin, so it does not assess the Cargo tests. APS's official Go parser and IR-DRY checker were run with Go 1.22 in a temporary container; the generated IR and advisory report are under ignored `target/acceptance/`. The report found 46 step occurrences, 45 unique steps, and 14 near-duplicate or possible-synonym candidates. They were reviewed and retained because they describe distinct layouts, routes, or assertions. APS still needs a Rust generator/runtime/step adapter and runner before it can execute or mutate these scenarios. AgNesse needs a separate Rust Slim fixture process. These adapters are not part of this transport prototype, and no APS/AgNesse execution or acceptance-mutation pass is claimed.
+
+To rerun the APS syntax and wording checks, set `APS_ROOT` to a checkout of the official Acceptance Pipeline Specification repository:
+
+```sh
+mkdir -p target/acceptance
+docker run --rm -v "$APS_ROOT:/aps:ro" -v "$PWD:/repo" -w /aps golang:1.22 \
+  go run ./cmd/gherkin-parser /repo/acceptance/multichannel.feature /repo/target/acceptance/multichannel.json
+docker run --rm -v "$APS_ROOT:/aps:ro" -v "$PWD:/repo" -w /aps golang:1.22 \
+  go run ./cmd/gherkin-ir-dry-checker /repo/target/acceptance/multichannel.json /repo/target/acceptance/multichannel-dry.json
+```
