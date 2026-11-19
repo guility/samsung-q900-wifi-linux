@@ -101,6 +101,38 @@ fn receiver_requires_an_explicit_output_sink() {
 }
 
 #[test]
+fn sync_report_reads_acoustic_observations_from_csv() {
+    let path = env::temp_dir().join(format!(
+        "q900-sync-{}-{}.csv",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::write(
+        &path,
+        "elapsed_s,local_ms,q900_ms\n0,0,8\n60,0,8\n120,0,8\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_q900-bridge"))
+        .args(["sync-report", "--input"])
+        .arg(&path)
+        .output()
+        .expect("q900-bridge should start");
+    let _ = fs::remove_file(path);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Observations: 3"));
+    assert!(stdout.contains("Q900T offset at start: 8.000 ms"));
+    assert!(stdout.contains("Drift: 0.000 ms/min"));
+    assert!(stdout.contains("Median |skew|: 8.000 ms"));
+    assert!(stdout.contains("P95 |skew|: 8.000 ms"));
+    assert!(stdout.contains("delay local output by 8.000 ms"));
+}
+
+#[test]
 fn sender_restores_default_and_unloads_modules_after_sigint() {
     let tools = FakeAudioTools::new();
     let mut child = tools.launch(&[

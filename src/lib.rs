@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
+pub mod sync;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AudioLayout {
     Surround51,

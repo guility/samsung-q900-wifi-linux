@@ -43,3 +43,10 @@ Feature: Multichannel RTP audio bridge
     When the sender stops with Ctrl-C
     Then it restores the prior default sink and stream destinations
     And it unloads the virtual sink and RTP modules
+
+  Scenario: Analyze repeated acoustic synchronization observations
+    Given a CSV file with elapsed time and local and Q900T arrival times from one recorder clock
+    When the user runs the sync-report command
+    Then it reports the initial acoustic skew and drift over time
+    And it reports median, 95th percentile, and maximum skew and residual jitter
+    And it recommends which output to delay to compensate the initial fixed offset

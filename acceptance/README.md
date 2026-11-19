@@ -13,11 +13,19 @@
 | Pro Audio AUX channels are mapped to HDMI order and require a connected HDMI port on ALSA devices | `receiver_remaps_pro_audio_aux_sink_and_requires_a_connected_hdmi_route` |
 | Receiver reads the actual `pw-dump` position format | `parses_pipewire_dump_channel_positions_as_reported_by_pw_dump` |
 | Bluetooth/SBC is refused as the local mirror | `sender_refuses_bluetooth_sink_that_may_use_sbc` |
+| Acoustic observations report fixed skew, drift, jitter, and compensation direction | `reports_fixed_skew_drift_and_compensation_from_acoustic_observations`, `recommends_delaying_q900_when_local_output_arrives_late`, and `sync_report_reads_acoustic_observations_from_csv` |
 
 Run the Rust checks with `cargo test`; run the no-hardware RTP acceptance path with `bash acceptance/loopback.sh 5.1` and `bash acceptance/loopback.sh 7.1`. The script starts the real sender and receiver modules, sends distinct tones through RTP into a simulated AUX output, remaps them to HDMI channel order, and checks channel identity. Hardware acceptance still needs a receiver with HDMI LPCM to the Q900T, a channel-identification signal for 5.1 and 7.1, and measured alignment against the local output. Those checks remain open in [issue #9](https://github.com/guility/samsung-q900-wifi-linux/issues/9) and [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
 
 ## Uncle Bob tools
 
 Mutator, Crapper, and Dryer have direct Rust support and were run against the current implementation. Their reports are generated under `.metrics/` and ignored by Git. A reproducible local setup needs Python 3.11+ and the three checkouts, with Crapper adjacent to Mutator.
+
+Generate Rust coverage where Crapper searches for LCOV before requesting its coverage report:
+
+```sh
+cargo llvm-cov --workspace --all-targets --lcov --output-path target/coverage/rust/lcov.info
+crapper --root . --changed --use-existing-coverage
+```
 
 SCRAP analyzes Speclj/Clojure specs rather than Rust or Gherkin, so it does not assess the Cargo tests. AgNesse needs a separate Rust Slim fixture process. APS needs a Rust generator/runtime/step adapter before it can execute the feature file. Those adapters are not part of this transport prototype, and the related tools are not represented as passing checks.

@@ -1,0 +1,5 @@
+# Synthetic data only; this is not a measurement of the Q900T.
+elapsed_s,local_ms,q900_ms
+0,100.000,108.000
+60,200.000,208.000
+120,300.000,308.000

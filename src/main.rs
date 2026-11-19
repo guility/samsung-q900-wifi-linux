@@ -1,3 +1,4 @@
+use q900_bridge::sync::{OutputPath, analyze_sync, parse_sync_csv};
 use q900_bridge::{
     AudioLayout, ModuleSpec, ReceiverConfig, SenderConfig, SinkCapabilities,
     has_auxiliary_channel_map, parse_pipewire_sinks, receiver_plan, sender_plan,
@@ -35,10 +36,54 @@ fn run(args: Vec<String>) -> Result<(), String> {
     match args[0].as_str() {
         "sender" => run_sender(parse_sender_args(&args[1..])?),
         "receiver" => run_receiver(parse_receiver_args(&args[1..])?),
+        "sync-report" => run_sync_report(&args[1..]),
         other => Err(format!(
-            "unknown command {other:?}; expected sender or receiver"
+            "unknown command {other:?}; expected sender, receiver, or sync-report"
         )),
     }
+}
+
+fn run_sync_report(args: &[String]) -> Result<(), String> {
+    let options = parse_options(args, &["--input"], &[])?;
+    let path = options
+        .value("--input")
+        .ok_or_else(|| "sync-report requires --input CSV_FILE".to_owned())?;
+    let csv = std::fs::read_to_string(path)
+        .map_err(|error| format!("could not read sync observations {path:?}: {error}"))?;
+    let observations = parse_sync_csv(&csv)?;
+    let report = analyze_sync(&observations)?;
+
+    let offset_description = if report.q900_offset_at_start_ms > 0.0 {
+        "Q900T arrives later"
+    } else if report.q900_offset_at_start_ms < 0.0 {
+        "local output arrives later"
+    } else {
+        "outputs align at start"
+    };
+    println!("Observations: {}", report.observations);
+    println!(
+        "Q900T offset at start: {:.3} ms ({offset_description})",
+        report.q900_offset_at_start_ms
+    );
+    println!("Drift: {:.3} ms/min", report.drift_ms_per_minute);
+    println!("Median |skew|: {:.3} ms", report.median_absolute_skew_ms);
+    println!("P95 |skew|: {:.3} ms", report.p95_absolute_skew_ms);
+    println!("Max |skew|: {:.3} ms", report.max_absolute_skew_ms);
+    println!("P95 residual jitter: {:.3} ms", report.p95_jitter_ms);
+    println!("Max residual jitter: {:.3} ms", report.max_jitter_ms);
+    match report.delay_earlier_output {
+        Some(OutputPath::Local) => println!(
+            "Recommended compensation: delay local output by {:.3} ms",
+            report.recommended_delay_ms
+        ),
+        Some(OutputPath::Q900T) => println!(
+            "Recommended compensation: delay Q900T by {:.3} ms",
+            report.recommended_delay_ms
+        ),
+        None => println!("Recommended compensation: no fixed delay"),
+    }
+    println!("This report covers acoustic audio-to-audio timing only.");
+    Ok(())
 }
 
 struct SenderArgs {
@@ -473,6 +518,6 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--dry-run]\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP."
+        "Usage:\n  q900-bridge sender [--layout 5.1|7.1] [--destination-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout 5.1|7.1] [--latency-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe sender mirrors system audio to a local sink and sends raw 24-bit/48 kHz RTP. The sync report analyzes acoustic measurements from CSV."
     );
 }
