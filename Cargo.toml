@@ -2,6 +2,7 @@
 name = "q900-bridge"
 version = "0.1.0"
 edition = "2024"
+default-run = "q900-bridge"
 description = "Experimental multichannel PipeWire RTP bridge for Linux"
 license = "MIT"
 
