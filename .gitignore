@@ -1,0 +1,7 @@
+/target/
+/web-ui/dist/
+/.metrics/
+/.venv/
+/.cpcache/
+/acceptance/.agnesse/
+__pycache__/
