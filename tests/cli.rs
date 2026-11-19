@@ -26,6 +26,18 @@ fn help_is_available_without_arguments_or_with_either_help_flag() {
 }
 
 #[test]
+fn web_rejects_invalid_ports_before_starting_the_server() {
+    for port in ["0", "65536", "not-a-port"] {
+        let output = run_cli(&["web", "--port", port]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--port must be an integer between 1 and 65535")
+        );
+    }
+}
+
+#[test]
 fn sender_dry_run_shows_eight_channel_pcm_plan() {
     let output = run_cli(&[
         "sender",

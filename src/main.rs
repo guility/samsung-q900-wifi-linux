@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+mod web;
+
 const DEFAULT_DESTINATION: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 56);
 const DEFAULT_PORT: u16 = 5004;
 const DEFAULT_LATENCY_MS: u16 = 100;
@@ -41,9 +43,26 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "receiver" => run_receiver(parse_receiver_args(&args[1..])?),
         "lpcm-check" => run_lpcm_check(parse_lpcm_check_args(&args[1..])?),
         "sync-report" => run_sync_report(&args[1..]),
+        "web" => run_web(&args[1..]),
         other => Err(format!(
-            "unknown command {other:?}; expected mirror, sender, receiver, lpcm-check, or sync-report"
+            "unknown command {other:?}; expected mirror, sender, receiver, lpcm-check, sync-report, or web"
         )),
+    }
+}
+
+fn run_web(args: &[String]) -> Result<(), String> {
+    web::run(parse_web_port(args)?)
+}
+
+fn parse_web_port(args: &[String]) -> Result<u16, String> {
+    let options = parse_options(args, &["--port"], &[])?;
+    match options.value("--port") {
+        Some(value) => value
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .ok_or_else(|| "--port must be an integer between 1 and 65535".to_owned()),
+        None => Ok(8765),
     }
 }
 
@@ -1050,6 +1069,32 @@ fn wait_until_stopped() -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  q900-bridge mirror --output SINK_NAME[=DELAY_MS] --output SINK_NAME[=DELAY_MS]... [--latency-ms MS] [--dry-run]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe mirror command routes stereo system audio to any number of selected PipeWire outputs; append =DELAY_MS to set a fixed delay for one output. Bluetooth A2DP may use SBC; optical S/PDIF carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to one local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through a selected output sink. Fixed delays do not compensate clock drift. Microphone-based automatic calibration is planned, but is not implemented yet."
+        "Usage:\n  q900-bridge mirror --output SINK_NAME[=DELAY_MS] --output SINK_NAME[=DELAY_MS]... [--latency-ms MS] [--dry-run]\n  q900-bridge web [--port PORT]\n  q900-bridge sender [--layout stereo|5.1|7.1] [--destination-ip IPv4] [--source-ip IPv4] [--port PORT] [--local-sink NAME] [--latency-ms MS] [--local-delay-ms MS] [--dry-run]\n  q900-bridge receiver --sink NAME [--layout stereo|5.1|7.1] [--latency-ms MS] [--output-delay-ms MS] [--dry-run]\n  q900-bridge lpcm-check --sink NAME [--layout stereo|5.1|7.1] [--tone-ms MS] [--gap-ms MS] [--dry-run]\n  q900-bridge sync-report --input OBSERVATIONS.csv\n\nThe web command serves a local PipeWire device selector at http://127.0.0.1:8765 by default. The mirror command routes stereo system audio to any number of selected PipeWire outputs; append =DELAY_MS to set a fixed delay for one output. Bluetooth A2DP may use SBC; optical S/PDIF carries stereo PCM but requires a physical optical connection. The sender mirrors system audio to one local sink and sends raw 24-bit/48 kHz RTP in stereo, 5.1, or 7.1. Set --source-ip to bind RTP to a specific local interface address; otherwise the system routing table selects the interface. Use lpcm-check to play one channel at a time through a selected output sink. Fixed delays do not compensate clock drift. Microphone-based automatic calibration is planned, but is not implemented yet."
     );
+}
+
+#[cfg(test)]
+mod web_command_tests {
+    use super::parse_web_port;
+
+    #[test]
+    fn web_port_defaults_and_accepts_both_u16_boundaries() {
+        assert_eq!(parse_web_port(&[]).unwrap(), 8765);
+        assert_eq!(
+            parse_web_port(&["--port".to_owned(), "1".to_owned()]).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_web_port(&["--port".to_owned(), "65535".to_owned()]).unwrap(),
+            u16::MAX
+        );
+    }
+
+    #[test]
+    fn web_port_rejects_zero_overflow_and_non_numeric_values() {
+        for value in ["0", "65536", "invalid"] {
+            let args = ["--port".to_owned(), value.to_owned()];
+            assert!(parse_web_port(&args).is_err());
+        }
+    }
 }

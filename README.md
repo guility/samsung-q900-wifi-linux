@@ -46,6 +46,21 @@ cargo run -- lpcm-check \
 
 The command confirms PipeWire accepted the channel test. It does not prove that an endpoint produced sound. The host can still route stereo directly to Q900T over Bluetooth, but its active A2DP codec is SBC.
 
+## Local WebAssembly control panel
+
+The device selector is a Rust/Yew frontend compiled to WebAssembly and served by the Rust `web` command. The service binds only to `127.0.0.1`; the HTML shell and CSS contain no handwritten JavaScript. The panel lists PipeWire sources and stereo-capable sinks, lets you select a microphone and two or more outputs, and stores a manual delay per output. Its preview button runs the existing `mirror --dry-run` path and does not change playback. Starting the mirror is an explicit action; stopping it or closing the service restores the previous system route. Microphone selection is saved for calibration, but acoustic probe playback and automatic measurement are not implemented yet.
+
+Build the WASM assets and start the local service:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+cd web-ui && trunk build --release && cd ..
+cargo run -- web --port 8765
+```
+
+Open <http://127.0.0.1:8765/>. The generated static assets live in `web-ui/dist`; rebuild them after changing the frontend.
+
 ## Automatic microphone calibration
 
 The preferred next step is to play a known probe on each selected output, capture all arrivals with one microphone clock, estimate each path's acoustic delay, and apply fixed offsets to the earlier outputs. The Logitech BRIO microphone is mounted about one metre above the Q900T; its PipeWire source is `alsa_input.usb-046d_Logitech_BRIO_A3706C12-03.analog-stereo` (`s16le`, 2 channels, 48 kHz). No calibration recording has been made. Calibration at one microphone position aligns outputs there; room changes, movement, and long-term clock drift need separate handling. The implementation plan is tracked in [issue #15](https://github.com/guility/samsung-q900-wifi-linux/issues/15), the device-selection web interface in [issue #16](https://github.com/guility/samsung-q900-wifi-linux/issues/16), and measurement criteria in [issue #2](https://github.com/guility/samsung-q900-wifi-linux/issues/2).
@@ -70,8 +85,8 @@ If a Linux receiver's optical output is connected to the Q900T, the host-to-rece
 
 ```sh
 cargo build --release
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Preview a sender setup without changing audio routing or sending network traffic:

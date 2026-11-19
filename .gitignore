@@ -1,4 +1,5 @@
 /target/
+/web-ui/dist/
 /.metrics/
 /.venv/
 /.cpcache/
